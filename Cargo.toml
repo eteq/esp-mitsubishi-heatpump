@@ -1,0 +1,36 @@
+[package]
+name = "esp-mitsubishi-heatpump"
+version = "0.1.0"
+authors = ["Erik Tollerud <erik.tollerud@gmail.com>"]
+edition = "2021"
+resolver = "2"
+rust-version = "1.71"
+
+[profile.release]
+opt-level = 3
+debug = true     # Symbols are nice and they don't increase the size on Flash
+
+[profile.dev]
+debug = true    # Symbols are nice and they don't increase the size on Flash
+opt-level = 0
+
+[features]
+default = ["std", "native"]
+
+native = ["esp-idf-svc/native", "esp-idf-hal/native"]
+pio = ["esp-idf-svc/pio", "esp-idf-hal/pio"]
+std = ["alloc", "esp-idf-svc/binstart", "esp-idf-svc/std", "esp-idf-hal/std", "esp-idf-hal/esp-idf-sys"]
+alloc = ["esp-idf-svc/alloc", "esp-idf-hal/alloc"]
+nightly = ["esp-idf-svc/nightly", "esp-idf-hal/nightly"]
+experimental = ["esp-idf-svc/experimental"]
+embassy = ["esp-idf-svc/embassy-sync", "esp-idf-svc/critical-section", "esp-idf-svc/embassy-time-driver"]
+
+[dependencies]
+log = { version = "0.4", default-features = false }
+esp-idf-svc = { version = "0.47.3", default-features = false }
+esp-idf-hal = { version = "0.42.5", default-features = false }
+anyhow = { version = "1" }
+embedded-svc = { version = "0.26.4" }
+
+[build-dependencies]
+embuild = "0.31.3"
