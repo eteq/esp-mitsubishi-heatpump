@@ -4,47 +4,20 @@
 
 use paste::paste;
 
-use core::cmp::Ordering;
 
-use embedded_svc::{
-    http::Method,
-    wifi::{self, AccessPointConfiguration, AuthMethod},
-    ws::FrameType,
-};
+use esp_idf_hal::prelude::*;
+use esp_idf_hal::gpio::AnyIOPin;
+use esp_idf_hal::uart;
 
-use esp_idf_svc::hal::prelude::Peripherals;
-use esp_idf_svc::{
-    eventloop::EspSystemEventLoop,
-    http::server::EspHttpServer,
-    nvs::EspDefaultNvsPartition,
-    systime::EspSystemTime,
-    wifi::{BlockingWifi, EspWifi},
-};
+const SSID: &str = env!("WIFI_SSID");
+const PASSWORD: &str = env!("WIFI_PASS");
 
-use esp_idf_svc::sys::{EspError, ESP_ERR_INVALID_SIZE};
-
-use log::*;
-
-use std::{borrow::Cow, collections::BTreeMap, str, sync::Mutex};
-
-//const SSID: &str = env!("WIFI_SSID");
-//const PASSWORD: &str = env!("WIFI_PASS");
 static INDEX_HTML: &str = include_str!("index.html");
 
-
-macro_rules! tx_pin {
-    ($ppins:expr) => {
+macro_rules! pin_from_envar {
+    ($ppins:expr, $evname:tt) => {
         paste! {
-            $ppins.[<gpio env!("TX_PIN_NUM")>]
-        }
-    };
-}
-
-
-macro_rules! rx_pin {
-    ($ppins:expr) => {
-        paste! {
-            $ppins.[<gpio env!("RX_PIN_NUM")>]
+            $ppins.[<gpio env!($evname)>]
         }
     };
 }
@@ -56,11 +29,19 @@ fn main() -> anyhow::Result<()> {
 
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
-    let tx_pin = tx_pin!(pins);
-    let rx_pin = rx_pin!(pins);
 
+    let config = uart::config::Config::default().baudrate(Hertz(115_200));
 
-    let my_int = "23".parse::<i32>().unwrap();
+    let mut uart: uart::UartDriver = uart::UartDriver::new(
+        peripherals.uart1,
+        pin_from_envar!(pins, "TX_PIN_NUM"),
+        pin_from_envar!(pins, "RX_PIN_NUM"),
+        Option::<AnyIOPin>::None,
+        Option::<AnyIOPin>::None,
+        &config
+    ).unwrap();
+    
+
 
     loop {
         // serve forever...

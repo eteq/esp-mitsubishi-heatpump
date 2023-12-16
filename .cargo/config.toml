@@ -15,3 +15,8 @@ MCU="esp32c6"
 # Note: this variable is not used by the pio builder (`cargo build --features pio`)
 ESP_IDF_VERSION = "v5.1.1"
 
+# defaults for envars in the code
+TX_PIN_NUM = "1"
+RX_PIN_NUM = "2"
+WIFI_SSID = "defaultssid"
+WIFI_PASS = "defaultpass"
