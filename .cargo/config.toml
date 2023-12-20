@@ -16,7 +16,7 @@ MCU="esp32c6"
 ESP_IDF_VERSION = "v5.1.1"
 
 # defaults for envars in the code
-TX_PIN_NUM = "1"
-RX_PIN_NUM = "2"
+TX_PIN_NUM = "4"
+RX_PIN_NUM = "5"
 WIFI_SSID = "defaultssid"
 WIFI_PASS = "defaultpass"

@@ -4,10 +4,12 @@
 
 use paste::paste;
 
+use esp_idf_hal as hal;
 
-use esp_idf_hal::prelude::*;
-use esp_idf_hal::gpio::AnyIOPin;
-use esp_idf_hal::uart;
+use hal::prelude::*;
+use hal::gpio::AnyIOPin;
+use hal::uart;
+use hal::delay::BLOCK;
 
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
@@ -30,7 +32,26 @@ fn main() -> anyhow::Result<()> {
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
 
+
+    #[cfg(any(
+        esp_idf_soc_uart_support_apb_clk,
+        esp_idf_soc_uart_support_pll_f40m_clk,
+        esp_idf_version_major = "4",
+    ))]
+    println!("1");
+    #[cfg(esp_idf_soc_uart_support_rtc_clk)]
+    println!("2");
+    #[cfg(esp_idf_soc_uart_support_xtal_clk)]
+    println!("3");
+    #[cfg(esp_idf_soc_uart_support_ref_tick)]
+    println!("4");
+
+    println!("pre config");
+
     let config = uart::config::Config::default().baudrate(Hertz(115_200));
+
+    println!("post config");
+
 
     let mut uart: uart::UartDriver = uart::UartDriver::new(
         peripherals.uart1,
@@ -43,7 +64,13 @@ fn main() -> anyhow::Result<()> {
     
 
 
+    // serve forever...
     loop {
-        // serve forever...
+        uart.write(&[0xaa])?;
+
+        let mut buf = [0_u8; 1];
+        uart.read(&mut buf, BLOCK)?;
+
+        println!("Written 0xaa, read 0x{:02x}", buf[0]);
     }
 }
