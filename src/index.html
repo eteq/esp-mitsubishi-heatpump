@@ -27,7 +27,7 @@
         let ws;
 
         function loadWebSocket() {
-            ws = new WebSocket("ws:///ws/uart");
+            ws = new WebSocket("ws://" + window.location.host + "/ws/uart");
             ws.onopen = function (e) {
                 submitButton.disabled = false;
             };

@@ -195,7 +195,6 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
     let vmu = sessions.clone();
 
     server.ws_handler("/ws/uart", move |ws| {
-        info!("IN HANDEL new: {:?} closed: {:?}", ws.is_new(), ws.is_closed());
         if ws.is_new() { 
             let mut v = vmu.lock().unwrap();
             v.push(WebSocketSession {
@@ -222,7 +221,6 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
                         // this is the real work of the handler for recv/send
                         let (_frame_type, len) = match ws.recv(&mut []) {
                             Ok(flen) =>  {
-                                info!("Got Frame of type {:?}", flen.0);
                                 if flen.0 == FrameType::Text(false) {
                                     flen
                                 } else {
@@ -239,17 +237,15 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
                         
                         let mut buf = [0u8; (MITSU_PROTOCOL_PACKET_SIZE*2)]; 
                         ws.recv(buf.as_mut())?;
-                        // now buf has the receive data which must be binary
-                        info!("ws Received {buf:?}");
+                        // now buf has the receive data which must be text
 
-                        let sbuf = "Hello from Rust!".as_bytes();
-                        ws.send(FrameType::Text(false), sbuf)?;
+                        let outstr = format!("What we got was {:?}", buf);
+                        ws.send(FrameType::Text(false), outstr.as_bytes())?;
                     }
                 }
                 None => { return Err(EspError::from_infallible::<ESP_ERR_NVS_INVALID_NAME>()); }
             }
         }
-        info!("out handel");
         Ok(())
     })?;
 
