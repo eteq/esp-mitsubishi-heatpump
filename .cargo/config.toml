@@ -18,5 +18,8 @@ ESP_IDF_VERSION = "v5.1.1"
 # defaults for envars in the code
 TX_PIN_NUM = "4"
 RX_PIN_NUM = "5"
+LED_PIN_NUM = "8"
 WIFI_SSID = "defaultssid"
 WIFI_PASS = "defaultpass"
+# only used in AP mode
+WIFI_CHANNEL = "11"

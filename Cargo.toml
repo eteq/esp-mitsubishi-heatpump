@@ -15,7 +15,7 @@ debug = true    # Symbols are nice and they don't increase the size on Flash
 opt-level = 0
 
 [features]
-default = ["std", "native"]
+default = ["std", "native", "ws2182onboard"]
 
 native = ["esp-idf-svc/native", "esp-idf-hal/native"]
 pio = ["esp-idf-svc/pio", "esp-idf-hal/pio"]
@@ -24,6 +24,7 @@ alloc = ["esp-idf-svc/alloc", "esp-idf-hal/alloc"]
 nightly = ["esp-idf-svc/nightly", "esp-idf-hal/nightly"]
 experimental = ["esp-idf-svc/experimental"]
 embassy = ["esp-idf-svc/embassy-sync", "esp-idf-svc/critical-section", "esp-idf-svc/embassy-time-driver"]
+ws2182onboard = [ ]
 
 [dependencies]
 log = { version = "0.4", default-features = false }
