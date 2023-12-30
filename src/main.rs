@@ -4,15 +4,15 @@ use log::info;
 use paste::paste;
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use esp_idf_hal as hal;
 
 use hal::prelude::*;
 use hal::gpio::AnyIOPin;
 use hal::uart;
-use hal::delay::BLOCK;
 use hal::rmt;
-use hal::sys::{EspError, ESP_ERR_INVALID_SIZE, ESP_ERR_INVALID_RESPONSE, ESP_ERR_NVS_INVALID_NAME };
+use hal::sys::{EspError, ESP_ERR_INVALID_RESPONSE, ESP_ERR_NVS_INVALID_NAME };
 
 use embedded_svc::ws::FrameType;
 use embedded_svc::wifi as eswifi;
@@ -31,12 +31,13 @@ const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
 const WIFI_CHANNEL: &str = env!("WIFI_CHANNEL");
 
-
 static INDEX_HTML: &str = include_str!("index.html");
+
+const LOOP_MIN_LENGTH:Duration = Duration::from_millis(2);
+const UART_TIMEOUT:Duration = Duration::from_millis(5);
 
 // Not sure how much is needed, but this is the default in an esp example so <shrug>
 const HTTP_SERVER_STACK_SIZE: usize = 10240;
-const MITSU_PROTOCOL_PACKET_SIZE: usize = 21;
 
 
 macro_rules! pin_from_envar {
@@ -48,7 +49,8 @@ macro_rules! pin_from_envar {
 }
 
 struct WebSocketSession {
-    pub queue: Vec<u8>,
+    pub tx_queue: Vec<u8>,
+    pub rx_queue: Vec<u8>,
     pub session: i32,
 }
 
@@ -80,32 +82,71 @@ fn main() -> anyhow::Result<()> {
         &uart_config
     ).unwrap();
 
-    // start up the wifi then try to confugure the server
-    let _wifi = setup_wifi(peripherals.modem)?;
     #[cfg(feature="ws2182onboard")]
-    npx.set(Rgb::new(20, 10, 0))?;
+    npx.set(Rgb::new(20, 5, 0))?;
 
+    // start up the wifi then try to configure the server
+    let _wifi = setup_wifi(peripherals.modem)?;
+
+    #[cfg(feature="ws2182onboard")]
+    npx.set(Rgb::new(20, 20, 0))?;
 
     let server_configuration = http::server::Configuration {
         stack_size: HTTP_SERVER_STACK_SIZE,
         ..Default::default()
     };
-
     let mut server = http::server::EspHttpServer::new(&server_configuration)?;
-    let mut sessions = setup_handlers(&mut server)?;
+    let sessions = setup_handlers(&mut server)?;
 
 
-    // setup complete, turn on green
     info!("Setup complete!");
-    #[cfg(feature="ws2182onboard")]
-    npx.set(Rgb::new(0, 20, 0))?;
 
-
-    // serve forever...
+    // serve and loop forever...
     loop {
+        let loopstart = Instant::now();
+
+        // green at the start of the loop
+        #[cfg(feature="ws2182onboard")]
+        npx.set(Rgb::new(0, 20, 0))?;
+
+        {
+            let mut sess = sessions.lock().unwrap();  // lock access
+            // Write out any data in the tx_queues of the sessions
+            for session in sess.iter_mut() {
+                let tx = &mut session.tx_queue;
+                while !tx.is_empty() {
+                    let n_drain = 1024.min(tx.len()); // at most a kilobyte at a time
+                    let d = tx.drain(..n_drain);
+                    info!("writing n={}",d.len());
+                    uart.write(d.as_slice())?;
+                }
+            }
+        }
 
         let mut buf = [0_u8; 100];
-        uart.read(&mut buf, BLOCK)?;
+        let timeout: hal::delay::TickType = UART_TIMEOUT.into();
+        let t: u32 = timeout.into();
+        let size = uart.read(&mut buf, t)?;
+
+        // Now fill the rx queues with whatever the uart returned
+        if size> 0 {
+            let mut sess = sessions.lock().unwrap();  // lock access
+            for session in sess.iter_mut() {
+                session.rx_queue.extend_from_slice(&buf[..size]);
+            }
+        }
+
+        let loopelapsed = loopstart.elapsed();
+        if loopelapsed < LOOP_MIN_LENGTH {
+            let sleepdur = LOOP_MIN_LENGTH - loopelapsed;
+
+            // magenta for napping
+            #[cfg(feature="ws2182onboard")]
+            npx.set(Rgb::new(0, 20, 20))?;
+            info!("loop too short, sleeping for {sleepdur:?}");
+
+            std::thread::sleep(sleepdur);
+        }
         
     }
 }
@@ -198,9 +239,11 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
         if ws.is_new() { 
             let mut v = vmu.lock().unwrap();
             v.push(WebSocketSession {
-                queue: Vec::new(),
+                tx_queue: Vec::new(),
+                rx_queue: Vec::new(),
                 session: ws.session(),
             }); 
+            info!("Session {} begun", ws.session());
         } else {
             let mut v = vmu.lock().unwrap();
             let mut sessionidx = None;
@@ -215,8 +258,9 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
                 Some(idx) => { 
                     if ws.is_closed() {
                         v.remove(idx);
+                        info!("Session {} closed", ws.session());
                     } else {
-                        let session = v.get(idx).unwrap();
+                        let session = v.get_mut(idx).unwrap();
 
                         // this is the real work of the handler for recv/send
                         let (_frame_type, len) = match ws.recv(&mut []) {
@@ -230,17 +274,33 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
                             Err(e) => return Err(e),
                         };
                         
-                        if len > (MITSU_PROTOCOL_PACKET_SIZE*2) {
-                            info!("Frame too large!");
-                            return Err(EspError::from_infallible::<ESP_ERR_INVALID_SIZE>());
+                        let mut rvec = vec![0u8; len];
+                        ws.recv(rvec.as_mut_slice())?;
+                        // now rvec has the receive data which we validated above
+                        //the last byte I think is a null terminator, but confirm...
+                        match rvec.pop() {
+                            Some(v) => {
+                                if v != 0 { rvec.push(v);}
+                            },
+                            None => {}
                         }
                         
-                        let mut buf = [0u8; (MITSU_PROTOCOL_PACKET_SIZE*2)]; 
-                        ws.recv(buf.as_mut())?;
-                        // now buf has the receive data which must be text
-
-                        let outstr = format!("What we got was {:?}", buf);
-                        ws.send(FrameType::Text(false), outstr.as_bytes())?;
+                        match  std::str::from_utf8(rvec.as_slice()) {
+                            Ok(s) => {
+                                if s == "recv?" {
+                                    let rxbuf = session.rx_queue.drain(..);
+                                    if rxbuf.len() > 0 {
+                                        ws.send(FrameType::Text(false), 
+                                                format!("Rxed: {:?}", rxbuf.as_slice()).as_bytes())?;
+                                    }
+                                } else {
+                                    session.tx_queue.extend_from_slice(rvec.as_mut_slice());
+                                }
+                            },
+                            Err(e) => {
+                                info!("Received invalid utf8: {:?} skipping receieve", e);
+                            }
+                        }
                     }
                 }
                 None => { return Err(EspError::from_infallible::<ESP_ERR_NVS_INVALID_NAME>()); }

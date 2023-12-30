@@ -10,44 +10,58 @@
 </head>
 
 <body onload="loadWebSocket()">
-    <form id="the-form" action="/post" accept-charset="utf-8">
+    <form id="the-form" form action="javascript:;" onsubmit="submitForm(this)"> >
         <label for="user-text">Send something over ws</label>
         <input type="text" id="user-text" name="user_text"><br>
         <input type="submit" id="user-submit" value="Submit" disabled>
     </form>
-    <p id="server-resp">Connecting...</p>
+    <table id="server-resp">
+        <tr id="connecting-row"><td>Connecting...</td></tr>
+    </table>
 
     <script type="text/javascript">
 
         const submitButton = document.getElementById("user-submit");
         const theForm = document.getElementById("the-form");
         const userText = document.getElementById("user-text");
-        const serverResp = document.getElementById("server-resp");
+        const serverRespTable = document.getElementById("server-resp");
 
-        let ws;
+        var first_connected = false;
+        var ws;
+        var wsRecvTimer;
 
         function loadWebSocket() {
             ws = new WebSocket("ws://" + window.location.host + "/ws/uart");
             ws.onopen = function (e) {
+                wsRecvTimer = setInterval(wsRecvTimerFunc, 100);
                 submitButton.disabled = false;
+                if (!first_connected) {
+                    document.getElementById("connecting-row").innerHTML = "<td>Connected</td>";
+                    first_connected = true;
+                } else {
+                    let rowconn = serverRespTable.insertRow(0);
+                    rowconn.innerHTML = "Reconnected";
+                }
+                
             };
             ws.onclose = ws.onerror = function (e) {
+                clearInterval(wsRecvTimer);
                 submitButton.disabled = true;
             };
             ws.onmessage = function (e) {
                 console.log(e.data);
-                serverResp.innerText = e.data;
+                let row = serverRespTable.insertRow(0);
+                row.innerText = e.data;
             };
         }
 
-        theForm.addEventListener("submit", async (e) => {
-            e.preventDefault();
+        function submitForm(form) {
+            ws.send(form.user_text.value);
+        }
 
-            let form = e.currentTarget;
-            let url = form.action;
-
-            ws.send(userText.value);
-        });
+        function wsRecvTimerFunc() {
+            ws.send("recv?");
+        }
 
     </script>
 </body>
