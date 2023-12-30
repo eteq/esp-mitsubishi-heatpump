@@ -12,7 +12,7 @@ use hal::prelude::*;
 use hal::gpio::AnyIOPin;
 use hal::uart;
 use hal::rmt;
-use hal::sys::{EspError, ESP_ERR_INVALID_RESPONSE, ESP_ERR_NVS_INVALID_NAME };
+use hal::sys::{EspError, ESP_ERR_INVALID_RESPONSE, ESP_ERR_INVALID_STATE };
 
 use embedded_svc::ws::FrameType;
 use embedded_svc::wifi as eswifi;
@@ -263,48 +263,71 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
                         let session = v.get_mut(idx).unwrap();
 
                         // this is the real work of the handler for recv/send
-                        let (_frame_type, len) = match ws.recv(&mut []) {
-                            Ok(flen) =>  {
-                                if flen.0 == FrameType::Text(false) {
-                                    flen
-                                } else {
-                                    return Err(EspError::from_infallible::<ESP_ERR_INVALID_RESPONSE>());
-                                }
-                            },
-                            Err(e) => return Err(e),
-                        };
+                        let (frame_type, len) = ws.recv(&mut [])?;
                         
                         let mut rvec = vec![0u8; len];
                         ws.recv(rvec.as_mut_slice())?;
-                        // now rvec has the receive data which we validated above
-                        //the last byte I think is a null terminator, but confirm...
-                        if let Some(v) = rvec.pop() {
-                            if v != 0 { rvec.push(v);}
-                        }
+                        // now rvec has the receive data
                         
-                        match  std::str::from_utf8(rvec.as_slice()) {
-                            Ok(s) => {
-                                if s == "recv?" {
-                                    let rxbuf = session.rx_queue.drain(..);
-                                    if rxbuf.len() > 0 {
-                                        ws.send(FrameType::Text(false), 
-                                                format!("Rxed: {:?}", rxbuf.as_slice()).as_bytes())?;
+                        match frame_type {
+                            FrameType::Text(continuation) => {
+                                if continuation {
+                                    info!("unexpected continuation text frame");
+                                    return Err(EspError::from_infallible::<ESP_ERR_INVALID_RESPONSE>());
+                                }
+                                //the last byte I think is always a null terminator, but confirm and remove if so...
+                                if let Some(v) = rvec.pop() {
+                                    if v != 0 { rvec.push(v);}
+                                }
+                                match  std::str::from_utf8(rvec.as_slice()) {
+                                    Ok(s) => {
+                                        if s == "recv?" {
+                                            
+                                            let rxbuf = session.rx_queue.drain(..);
+                                            if rxbuf.len() > 0 {
+                                                ws.send(FrameType::Text(false), 
+                                                        format!("Rxed: {:?}", rxbuf.as_slice()).as_bytes())?;
+                                            }
+                                        }  else {
+                                            info!("Received text that was not understood: {s:?}");
+                                        }
+                                    },
+                                    Err(e) => {
+                                        info!("Received invalid utf8: {:?} skipping receieve", e);
                                     }
-                                } else {
-                                    session.tx_queue.extend_from_slice(rvec.as_mut_slice());
                                 }
                             },
-                            Err(e) => {
-                                info!("Received invalid utf8: {:?} skipping receieve", e);
+                            FrameType::Binary(continuation) => {
+                                if continuation {
+                                    info!("unexpected continuation binary frame");
+                                    return Err(EspError::from_infallible::<ESP_ERR_INVALID_RESPONSE>());
+                                }
+
+                                info!("Received binary: {:?}", rvec);
+                                    session.tx_queue.extend_from_slice(rvec.as_mut_slice());
+                                    session.tx_queue.push(checksum(rvec));
+                                
+                            },
+                            _ => {
+                                info!("Received unknown frame type: {:?}", frame_type);
+                                return Err(EspError::from_infallible::<ESP_ERR_INVALID_RESPONSE>());
                             }
                         }
                     }
                 }
-                None => { return Err(EspError::from_infallible::<ESP_ERR_NVS_INVALID_NAME>()); }
+                None => { return Err(EspError::from_infallible::<ESP_ERR_INVALID_STATE>()); }
             }
         }
         Ok(())
     })?;
 
     Ok(sessions)
+}
+
+fn checksum(rvec: Vec<u8>) -> u8 {
+    let mut sum = 0u8;
+    for b in rvec.iter() {
+        sum += b;
+    }
+    0xfc - sum
 }

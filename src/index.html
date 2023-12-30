@@ -10,10 +10,84 @@
 </head>
 
 <body onload="loadWebSocket()">
-    <form id="the-form" form action="javascript:;" onsubmit="submitForm(this)"> >
-        <label for="user-text">Send something over ws</label>
-        <input type="text" id="user-text" name="user_text"><br>
-        <input type="submit" id="user-submit" value="Submit" disabled>
+    <form id="the-form" action="javascript:;" onsubmit="sendForm(this)">
+
+        <fieldset>
+            <legend>Header</legend>
+
+            <label for="hdr0">Sync Byte</label>
+            <input type="text" id="hdr0" name="hdr0", value="0xfc" disabled>
+
+            <label for="hdr1">Packet Type</label>
+            <input type="text" id="hdr1" name="hdr1", value="0x">
+
+            <label for="hdr2">?</label>
+            <input type="text" id="hdr2" name="hdr2", value="0x01">
+
+            <label for="hdr3">?</label>
+            <input type="text" id="hdr3" name="hdr3", value="0x30">
+
+            <label for="hdr4">Payload Length</label>
+            <input type="text" id="hdr4" name="hdr4", value="0x10" disabled>
+        </fieldset>
+
+
+        <fieldset>
+            <legend>Data</legend>
+
+            <label for="data0">D0/Command Set</label>
+            <input type="text" id="data0" name="data0", value="0x">
+            
+            <br>
+
+            <label for="data1">D1/Command1</label>
+            <input type="text" id="data1" name="data1" value="0x0">
+
+            <label for="data2">D2/Command2</label>
+            <input type="text" id="data2" name="data2" value="0x0">
+
+            <label for="data3">D3</label>
+            <input type="text" id="data3" name="data3" value="0x0">
+
+            <label for="data4">D4</label>
+            <input type="text" id="data4" name="data4" value="0x0">
+
+            <label for="data5">D5</label>
+            <input type="text" id="data5" name="data5" value="0x0">
+
+            <label for="data6">D6</label>
+            <input type="text" id="data6" name="data6" value="0x0">
+
+            <label for="data7">D7</label>
+            <input type="text" id="data7" name="data7" value="0x0">
+
+            <label for="data8">D8</label>
+            <input type="text" id="data8" name="data8" value="0x0">
+
+            <label for="data9">D9</label>
+            <input type="text" id="data9" name="data9" value="0x0">
+
+            <label for="data10">D10</label>
+            <input type="text" id="data10" name="data10" value="0x0">
+
+            <label for="data11">D11</label>
+            <input type="text" id="data11" name="data11" value="0x0">
+
+            <label for="data12">D12</label>
+            <input type="text" id="data12" name="data12" value="0x0">
+
+            <label for="data13">D13</label>
+            <input type="text" id="data13" name="data13" value="0x0"> 
+
+            <label for="data14">D14</label>
+            <input type="text" id="data14" name="data14" value="0x0">
+
+            <label for="data15">D15</label>
+            <input type="text" id="data15" name="data15" value="0x0">
+
+        </fieldset>
+
+        <input type="submit" id="user-send" value="Send" disabled>
     </form>
     <table id="server-resp">
         <tr id="connecting-row"><td>Connecting...</td></tr>
@@ -21,9 +95,7 @@
 
     <script type="text/javascript">
 
-        const submitButton = document.getElementById("user-submit");
-        const theForm = document.getElementById("the-form");
-        const userText = document.getElementById("user-text");
+        const sendButton = document.getElementById("user-send");
         const serverRespTable = document.getElementById("server-resp");
 
         var first_connected = false;
@@ -34,7 +106,7 @@
             ws = new WebSocket("ws://" + window.location.host + "/ws/uart");
             ws.onopen = function (e) {
                 wsRecvTimer = setInterval(wsRecvTimerFunc, 100);
-                submitButton.disabled = false;
+                sendButton.disabled = false;
                 if (!first_connected) {
                     document.getElementById("connecting-row").innerHTML = "<td>Connected</td>";
                     first_connected = true;
@@ -46,7 +118,7 @@
             };
             ws.onclose = ws.onerror = function (e) {
                 clearInterval(wsRecvTimer);
-                submitButton.disabled = true;
+                sendButton.disabled = true;
             };
             ws.onmessage = function (e) {
                 console.log(e.data);
@@ -55,8 +127,44 @@
             };
         }
 
-        function submitForm(form) {
-            ws.send(form.user_text.value);
+        function sendForm(form) {
+            let tosend = new Uint8Array(21);
+            let dosend = true;
+            for (var sendidx = 0; sendidx < tosend.length; sendidx++) {
+                let inputname;
+                let n;
+            
+                if (sendidx < 5) {
+                    inputname = "hdr" + sendidx;
+                } else {
+                    inputname = "data" + (sendidx - 5);
+                }
+                try {
+                    n = Number(form[inputname].value);
+                    if (isNaN(n)) {
+                        throw "not a number";
+                    }
+                    if ((n > 255) || (n < 0)) {
+                        throw "out of range for a byte";
+                    }
+                    console.log("number good " + n);
+                } catch (e) {
+                    console.log("failed to parse " + inputname +" due to: " + e);
+                    dosend = false;
+
+                    form[inputname].style.backgroundColor = "red";
+
+                    continue
+                }
+                form[inputname].style.backgroundColor = "";
+                tosend[sendidx] = n;
+            }
+
+            
+            if (dosend) {
+                console.log("sending:" + tosend);
+                ws.send(tosend);
+            }
         }
 
         function wsRecvTimerFunc() {
