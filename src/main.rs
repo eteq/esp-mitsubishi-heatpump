@@ -278,11 +278,8 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
                         ws.recv(rvec.as_mut_slice())?;
                         // now rvec has the receive data which we validated above
                         //the last byte I think is a null terminator, but confirm...
-                        match rvec.pop() {
-                            Some(v) => {
-                                if v != 0 { rvec.push(v);}
-                            },
-                            None => {}
+                        if let Some(v) = rvec.pop() {
+                            if v != 0 { rvec.push(v);}
                         }
                         
                         match  std::str::from_utf8(rvec.as_slice()) {
