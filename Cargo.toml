@@ -36,3 +36,7 @@ paste = { version = "1.0.14"}
 
 [build-dependencies]
 embuild = "0.31.3"
+
+[[bin]]
+name = "packet-sender"
+path = "src/packet-sender.rs"
