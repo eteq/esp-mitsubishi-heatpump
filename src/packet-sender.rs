@@ -145,7 +145,7 @@ fn main() -> anyhow::Result<()> {
 
             // magenta for napping
             #[cfg(feature="ws2182onboard")]
-            npx.set(Rgb::new(0, 20, 20))?;
+            npx.set(Rgb::new(20, 0, 20))?;
             info!("loop too short, sleeping for {sleepdur:?}");
 
             std::thread::sleep(sleepdur);
