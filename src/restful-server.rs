@@ -3,6 +3,7 @@
 use log::info;
 use paste::paste;
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use esp_idf_hal as hal;
@@ -25,11 +26,11 @@ use esp_idf_svc::{
 mod ws2812b;
 use ws2812b::{Ws2812B, Rgb};
 
+use serde_json::json;
+
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
 const WIFI_CHANNEL: &str = env!("WIFI_CHANNEL");
-
-static INDEX_HTML: &str = include_str!("index.html");
 
 const LOOP_MIN_LENGTH:Duration = Duration::from_millis(2);
 const UART_TIMEOUT:Duration = Duration::from_millis(5);
@@ -46,6 +47,17 @@ macro_rules! pin_from_envar {
     };
 }
 
+
+struct HeatPumpState {
+    pub ireq: u32
+}
+impl HeatPumpState {
+    pub fn new() -> Self{
+        Self {
+            ireq: 0
+        }
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -89,7 +101,7 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     let mut server = http::server::EspHttpServer::new(&server_configuration)?;
-    setup_handlers(&mut server)?;
+    let state = setup_handlers(&mut server)?;
 
 
     info!("Setup complete!");
@@ -102,13 +114,15 @@ fn main() -> anyhow::Result<()> {
         #[cfg(feature="ws2182onboard")]
         npx.set(Rgb::new(0, 20, 0))?;
 
+        { state.lock().unwrap().ireq += 1; }
+
         let loopelapsed = loopstart.elapsed();
         if loopelapsed < LOOP_MIN_LENGTH {
             let sleepdur = LOOP_MIN_LENGTH - loopelapsed;
 
             // magenta for napping
             #[cfg(feature="ws2182onboard")]
-            npx.set(Rgb::new(0, 20, 20))?;
+            npx.set(Rgb::new(20, 0, 20))?;
             info!("loop too short, sleeping for {sleepdur:?}");
 
             std::thread::sleep(sleepdur);
@@ -190,11 +204,21 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
     Ok(wifi)
 }
 
-fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<(),EspError> {
-    server.fn_handler("/", http::Method::Get, |req| {
-        req.into_ok_response()?.write(INDEX_HTML.as_bytes())?;
+fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<HeatPumpState>> , EspError> {
+    let state = Arc::new(Mutex::new(HeatPumpState::new()));
+
+    let inner_state = state.clone();
+
+    server.fn_handler("/status.json", http::Method::Get, move |req| {
+        let resp = json!({
+            "connected": false,
+            "num": inner_state.lock().unwrap().ireq
+        });
+        
+        let response_headers = &[("Content-Type", "application/json")];
+        req.into_response(200, Some("OK"), response_headers)?.write(resp.to_string().as_bytes())?;
         Ok(())
     })?;
 
-    Ok(())
+    Ok(state)
 }
