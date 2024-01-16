@@ -21,7 +21,7 @@ use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     nvs::EspDefaultNvsPartition,
     wifi::{BlockingWifi, EspWifi},
-    http
+    http,
 };
 
 mod ws2812b;
@@ -34,7 +34,7 @@ const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
 const WIFI_CHANNEL: &str = env!("WIFI_CHANNEL");
 
-static INDEX_HTML: &str = include_str!("index.html");
+static INDEX_HTML: &str = include_str!("packet-sender-index.html");
 
 const LOOP_MIN_LENGTH:Duration = Duration::from_millis(2);
 const UART_TIMEOUT:Duration = Duration::from_millis(5);
@@ -228,10 +228,13 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
 }
 
 fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<Vec<WebSocketSession>>>,EspError> {
-    server.fn_handler("/", http::Method::Get, |req| {
+    let index_handler = |req: http::server::Request<&mut http::server::EspHttpConnection>| {
         req.into_ok_response()?.write(INDEX_HTML.as_bytes())?;
         Ok(())
-    })?;
+    };
+
+    server.fn_handler("/", http::Method::Get, index_handler)?;
+    server.fn_handler("/index.html", http::Method::Get, index_handler)?;
 
 
     let sessions = Arc::new(Mutex::new(Vec::<WebSocketSession>::new()));
