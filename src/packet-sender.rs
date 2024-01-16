@@ -27,6 +27,9 @@ use esp_idf_svc::{
 mod ws2812b;
 use ws2812b::{Ws2812B, Rgb};
 
+mod misc;
+use misc::checksum;
+
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
 const WIFI_CHANNEL: &str = env!("WIFI_CHANNEL");
@@ -322,12 +325,4 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
     })?;
 
     Ok(sessions)
-}
-
-fn checksum(rvec: Vec<u8>) -> u8 {
-    let mut sum = 0u8;
-    for b in rvec.iter() {
-        sum += b;
-    }
-    0xfc - sum
 }

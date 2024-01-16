@@ -40,3 +40,7 @@ embuild = "0.31.3"
 [[bin]]
 name = "packet-sender"
 path = "src/packet-sender.rs"
+
+[[bin]]
+name = "restful-server"
+path = "src/restful-server.rs"
