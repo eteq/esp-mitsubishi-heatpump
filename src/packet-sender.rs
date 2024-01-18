@@ -27,9 +27,6 @@ use esp_idf_svc::{
 mod ws2812b;
 use ws2812b::{Ws2812B, Rgb};
 
-mod misc;
-use misc::checksum;
-
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
 const WIFI_CHANNEL: &str = env!("WIFI_CHANNEL");
@@ -74,7 +71,12 @@ fn main() -> anyhow::Result<()> {
     npx.set(Rgb::new(20, 0, 0))?;
 
     // start by setting up uart
-    let uart_config = uart::config::Config::default().baudrate(Hertz(115_200));
+    let uart_config = uart::config::Config::default()
+        .baudrate(Hertz(2400))
+        .data_bits(uart::config::DataBits::DataBits8)
+        .parity_even()
+        .stop_bits(uart::config::StopBits::STOP1)
+        .flow_control(uart::config::FlowControl::None);
 
     let uart: uart::UartDriver = uart::UartDriver::new(
         peripherals.uart1,
@@ -328,4 +330,12 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
     })?;
 
     Ok(sessions)
+}
+
+fn checksum(rvec: Vec<u8>) -> u8 {
+    let mut sum = 0u8;
+    for b in rvec.iter() {
+        sum += b;
+    }
+    0xfc - sum
 }

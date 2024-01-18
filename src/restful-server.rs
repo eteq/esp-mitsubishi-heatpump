@@ -33,7 +33,9 @@ const PASSWORD: &str = env!("WIFI_PASS");
 const WIFI_CHANNEL: &str = env!("WIFI_CHANNEL");
 
 const LOOP_MIN_LENGTH:Duration = Duration::from_millis(2);
-const UART_TIMEOUT:Duration = Duration::from_millis(5);
+const CONNECT_DELAY:Duration = Duration::from_millis(2000);
+
+const CONNECT_BYTES: [u8; 8] = [0xfc, 0x5a, 0x01, 0x30, 0x02, 0xca, 0x01, 0xa8];
 
 // Not sure how much is needed, but this is the default in an esp example so <shrug>
 const HTTP_SERVER_STACK_SIZE: usize = 10240;
@@ -49,13 +51,96 @@ macro_rules! pin_from_envar {
 
 
 struct HeatPumpState {
-    pub ireq: u32
+    pub connected: bool
 }
 impl HeatPumpState {
     pub fn new() -> Self{
         Self {
-            ireq: 0
+            connected: false
         }
+    }
+}
+
+struct Packet {
+    pub packet_type: u8,
+    pub h2: u8,
+    pub h3: u8,
+    pub data: Vec<u8>,
+    pub checksum: u8
+}
+impl Packet {
+    pub fn new() -> Self {
+        Self {
+            packet_type: 0,
+            h2: 0x01,
+            h3: 0x03,
+            data: Vec::new(),
+            checksum: 0
+        }
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self>  {
+        if bytes.len() < 6 {
+            anyhow::bail!("Packet too short to be a valid packet");
+        }
+        if bytes[0] != 0xfc {
+            anyhow::bail!("Packet does not start with 0xfc");
+        }
+
+        let mut packet = Self::new();
+        packet.packet_type = bytes[1];
+        packet.h2 = bytes[2];
+        packet.h3 = bytes[3];
+        let len = bytes[4] as usize;
+        if bytes.len() < 6+len {
+            anyhow::bail!("Packet length in header does not match received data");
+        }
+        for i in 0..len {
+            packet.data.push(bytes[5 + i as usize]);
+        }
+        packet.checksum = bytes[5 + len];
+
+        if !packet.check_checksum() {
+            anyhow::bail!("Packet checksum does not match");
+        }
+
+        Ok(packet)
+    }
+
+    pub fn packet_size(&self) -> usize {
+        6 + self.data.len() as usize
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(6 + self.data.len());
+        bytes.push(0xfc);
+        bytes.push(self.packet_type);
+        bytes.push(self.h2);
+        bytes.push(self.h3);
+        bytes.push(self.data.len() as u8);
+        for d in self.data.iter() { bytes.push(*d); }
+        bytes.push(self.checksum);
+        bytes
+    }
+
+    pub fn compute_checksum(&self) -> u8 {
+        let mut sum = 0u8;
+        sum += self.packet_type;
+        sum += self.h2;
+        sum += self.h3;
+        sum += self.data.len() as u8;
+        for i in 0..self.data.len() {
+            sum += self.data[i as usize];
+        }
+        0xfc - sum
+    }
+
+    pub fn check_checksum(&self) -> bool {
+        self.checksum == self.compute_checksum()
+    }
+
+    pub fn set_checksum(&mut self) {
+        self.checksum = self.compute_checksum();
     }
 }
 
@@ -76,7 +161,12 @@ fn main() -> anyhow::Result<()> {
     npx.set(Rgb::new(20, 0, 0))?;
 
     // start by setting up uart
-    let uart_config = uart::config::Config::default().baudrate(Hertz(115_200));
+    let uart_config = uart::config::Config::default()
+        .baudrate(Hertz(2400))
+        .data_bits(uart::config::DataBits::DataBits8)
+        .parity_even()
+        .stop_bits(uart::config::StopBits::STOP1)
+        .flow_control(uart::config::FlowControl::None);
 
     let uart: uart::UartDriver = uart::UartDriver::new(
         peripherals.uart1,
@@ -86,6 +176,7 @@ fn main() -> anyhow::Result<()> {
         Option::<AnyIOPin>::None,
         &uart_config
     ).unwrap();
+    let uart_byte_time: u64 = (100 / uart.baudrate()?.0 + 1) as u64;
 
     #[cfg(feature="ws2182onboard")]
     npx.set(Rgb::new(20, 5, 0))?;
@@ -114,8 +205,46 @@ fn main() -> anyhow::Result<()> {
         #[cfg(feature="ws2182onboard")]
         npx.set(Rgb::new(0, 20, 0))?;
 
-        { state.lock().unwrap().ireq += 1; }
+        // This is the business part of the loop
+        let connected = state.lock().unwrap().connected;
+        
+        if connected {
+            // read out anything waiting in the uart
+            let mut bytes_read: Vec<u8> = Vec::new();
+            let mut rbuf = [0u8; 16+6];  // typical packet size
+            while uart.remaining_read()? > 0 {
+                let nread = uart.read(&mut rbuf, 1)?;
+                for i in 0..nread { bytes_read.push(rbuf[i as usize]); }
+                std::thread::sleep(Duration::from_millis(uart_byte_time*2));  // wait a full two byte times just in case
+            }
 
+
+        } else {
+            //try to connect
+            info!("Sending Connection string!");
+            uart.write(&CONNECT_BYTES)?;
+
+            std::thread::sleep(CONNECT_DELAY);
+
+            // check for a response
+            let mut rbuf = [0u8; 22];
+            let nread = uart.read(&mut rbuf, 1)?;
+            if nread > 0 {
+                let response = Packet::from_bytes(&rbuf)?;
+                if response.packet_type == 0x7A {
+                    info!("Connected!");
+                    state.lock().unwrap().connected = true;
+                }
+                if nread > response.packet_size() {
+                    info!("{} extra bytes in connect response, ignoring", nread - response.packet_size());
+                }
+            } else {
+                info!("No response to connection string");
+            }
+        }
+
+
+        // check to see if we need to delay because the loop was too fast
         let loopelapsed = loopstart.elapsed();
         if loopelapsed < LOOP_MIN_LENGTH {
             let sleepdur = LOOP_MIN_LENGTH - loopelapsed;
@@ -210,9 +339,9 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
     let inner_state = state.clone();
 
     server.fn_handler("/status.json", http::Method::Get, move |req| {
+        let state = inner_state.lock().unwrap();
         let resp = json!({
-            "connected": false,
-            "num": inner_state.lock().unwrap().ireq
+            "connected": state.connected
         });
         
         let response_headers = &[("Content-Type", "application/json")];
@@ -222,3 +351,4 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
 
     Ok(state)
 }
+
