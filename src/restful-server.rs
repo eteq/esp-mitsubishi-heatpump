@@ -61,6 +61,7 @@ impl HeatPumpState {
     }
 }
 
+#[derive(Debug)]
 struct Packet {
     pub packet_type: u8,
     pub h2: u8,
@@ -73,8 +74,18 @@ impl Packet {
         Self {
             packet_type: 0,
             h2: 0x01,
-            h3: 0x03,
+            h3: 0x30,
             data: Vec::new(),
+            checksum: 0
+        }
+    }
+
+    pub fn new_type_size(ptype: u8, size: usize) -> Self {
+        Self {
+            packet_type: ptype,
+            h2: 0x01,
+            h3: 0x30,
+            data: vec![0u8; size],
             checksum: 0
         }
     }
@@ -124,7 +135,7 @@ impl Packet {
     }
 
     pub fn compute_checksum(&self) -> u8 {
-        let mut sum = 0u8;
+        let mut sum = 0xfcu8;
         sum += self.packet_type;
         sum += self.h2;
         sum += self.h3;
@@ -196,19 +207,38 @@ fn main() -> anyhow::Result<()> {
 
 
     info!("Setup complete!");
+    //let mut test_send: Option<[u8; 22]> = Some([252,  66,   1,  48,  16,   9,   0,   0,   0,   0,   0,   0,   0,  0,   0,   0,   0,   0,   0,   0,   0, 116]);
+    let mut test_send: Option<Packet> = Some(Packet::new_type_size(0x42, 16));
+    test_send.as_mut().unwrap().data[0] = 9;
+    test_send.as_mut().unwrap().set_checksum();
 
     // serve and loop forever...
     loop {
         let loopstart = Instant::now();
 
-        // green at the start of the loop
+        let connected = state.lock().unwrap().connected;
+
+        // update the LED state at the start of the loop based on connected status
         #[cfg(feature="ws2182onboard")]
-        npx.set(Rgb::new(0, 20, 0))?;
+        if connected {
+            // green for connected
+            npx.set(Rgb::new(0, 20, 0))?;
+        } else {
+            // magenta for disconnected
+            npx.set(Rgb::new(20, 0, 20))?;
+        }
+        
 
         // This is the business part of the loop
-        let connected = state.lock().unwrap().connected;
         
         if connected {
+            if test_send.is_some() {
+                // Note: the take() changes test_send to None, which is what we want because then the next time through the loop we won't send it again
+                uart.write(&test_send.take().unwrap().to_bytes())?;
+                test_send = None;
+                std::thread::sleep(Duration::from_millis(uart_byte_time*30));
+            }
+
             // read out anything waiting in the uart
             let mut bytes_read: Vec<u8> = Vec::new();
             let mut rbuf = [0u8; 16+6];  // typical packet size
@@ -217,6 +247,13 @@ fn main() -> anyhow::Result<()> {
                 for i in 0..nread { bytes_read.push(rbuf[i as usize]); }
                 std::thread::sleep(Duration::from_millis(uart_byte_time*2));  // wait a full two byte times just in case
             }
+
+            if bytes_read.len() > 0 {
+                info!("read {} bytes: {:?}", bytes_read.len(), bytes_read);
+                let packet = Packet::from_bytes(&bytes_read)?;
+                info!("packet: {packet:?}");
+            }
+            
 
 
         } else {
@@ -230,7 +267,8 @@ fn main() -> anyhow::Result<()> {
             let mut rbuf = [0u8; 22];
             let nread = uart.read(&mut rbuf, 1)?;
             if nread > 0 {
-                let response = Packet::from_bytes(&rbuf)?;
+                let resp = &rbuf[..nread];
+                let response = Packet::from_bytes(resp)?;
                 if response.packet_type == 0x7A {
                     info!("Connected!");
                     state.lock().unwrap().connected = true;
@@ -249,10 +287,7 @@ fn main() -> anyhow::Result<()> {
         if loopelapsed < LOOP_MIN_LENGTH {
             let sleepdur = LOOP_MIN_LENGTH - loopelapsed;
 
-            // magenta for napping
-            #[cfg(feature="ws2182onboard")]
-            npx.set(Rgb::new(20, 0, 20))?;
-            info!("loop too short, sleeping for {sleepdur:?}");
+            //info!("loop too short, sleeping for {sleepdur:?}");
 
             std::thread::sleep(sleepdur);
         }
