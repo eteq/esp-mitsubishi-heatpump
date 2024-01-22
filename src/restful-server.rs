@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{compiler_fence, Ordering};
-use strum_macros::FromRepr;
+use strum::IntoEnumIterator;
+use strum_macros::{FromRepr, EnumIter};
 use log::info;
 use paste::paste;
 
@@ -59,40 +60,36 @@ macro_rules! pin_from_envar {
 struct HeatPumpState {
     pub connected: bool,
     pub poweron: bool,
-    pub isee: bool,
+    pub isee_present: bool,
     pub mode: HeatPumpMode,
-    pub desired_temperature: f32,
+    pub desired_temperature_c: f32,
     pub fan_speed: FanSpeed,
     pub vane: VaneDirection,
     pub widevane: WideVaneDirection,
-    pub widevane_adj: bool,
-    pub room_temperature: f32,
-    pub last_room_temperature_data: Option<Vec<u8>>,
+    pub isee_mode: ISeeMode,
+    pub room_temperature_c: f32,
+    pub room_temperature_c_2: f32,
     pub operating: u8,
-    pub compressorfreq: u8,
-    pub last_standby_mode_data: Option<Vec<u8>>,
     pub error_data: Option<Vec<u8>>,
-    pub unknown_status_last_data: HashMap<u8, Vec<u8>>,
+    pub last_status_packets: HashMap<u8, Vec<u8>>,
 }
 impl HeatPumpState {
     pub fn new() -> Self{
         Self {
             connected: false,
             poweron: false,
-            isee: false,
+            isee_present: false,
             mode: HeatPumpMode::Off,
-            desired_temperature: -999.0,
+            desired_temperature_c: -999.0,
             fan_speed: FanSpeed::Auto,
             vane: VaneDirection::Auto,
             widevane: WideVaneDirection::Mid,
-            widevane_adj: false,
-            room_temperature: -999.0,
-            last_room_temperature_data: None,
+            isee_mode: ISeeMode::Unknown,
+            room_temperature_c: -999.0,
+            room_temperature_c_2: -999.0,
             operating: 0,
-            compressorfreq: 0,
-            last_standby_mode_data: None,
             error_data: None,
-            unknown_status_last_data: HashMap::new(),
+            last_status_packets: HashMap::new(),
         }
     }
 }
@@ -191,7 +188,7 @@ impl Packet {
     }
 }
 
-#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize, EnumIter)]
 enum StatusPacketType {
     Settings = 2,
     RoomTemperature = 3,
@@ -214,13 +211,12 @@ enum HeatPumpMode {
 #[derive(Clone, Copy, FromRepr, Debug, Serialize)]
 enum FanSpeed {
     Auto = 0,
-    SuperQuiet = 1,
-    Quiet = 2,
-    Low = 3,
-    Powerful = 5,
-    SuperPowerful = 6,
+    Quiet = 1,
+    Low = 2,
+    Med = 3,
+    High = 5,
+    VeryHigh = 6,
 }
-//TODO: Check these!
 
 #[derive(Clone, Copy, FromRepr, Debug, Serialize)]
 enum VaneDirection {
@@ -232,7 +228,6 @@ enum VaneDirection {
     Vertical=5,
     Swing=7,
 }
-//TODO: Check these!
 
 #[derive(Clone, Copy, FromRepr, Debug, Serialize)]
 enum WideVaneDirection {
@@ -243,6 +238,14 @@ enum WideVaneDirection {
     FarRight=5,
     Split=8,
     Swing=0x0c,
+    ISee=0x80,
+}
+
+#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
+enum ISeeMode {
+    Unknown=254,
+    Direct=2,
+    Indirect=1,
 }
 
 
@@ -330,15 +333,10 @@ fn main() -> anyhow::Result<()> {
 
                 let mut all_done = false;
                 // ask for status from a subset of status packets
-                for ptype in [StatusPacketType::Settings, 
-                              StatusPacketType::RoomTemperature, 
-                              StatusPacketType::ErrorCodeMaybe, 
-                              StatusPacketType::MiscInfo, 
-                              StatusPacketType::StandbyMode
-                             ].iter() {
+                for ptype in StatusPacketType::iter() {
                     all_done = false;
                     let mut packet = Packet::new_type_size(0x42, 16);
-                    packet.data[0] = *ptype as u8;
+                    packet.data[0] = ptype as u8;
                     packet.set_checksum();
                     uart.write(&packet.to_bytes())?;
 
@@ -354,7 +352,7 @@ fn main() -> anyhow::Result<()> {
                     let status_packet = match read_packet(&uart)? {
                         Some(p) => { p }
                         None => {
-                            info!("No response to status packet request, assuming disconnected");
+                            info!("No response to status packet request for type {:?}, assuming disconnected", ptype);
                             state.lock().unwrap().connected = false;
                             break;
                         }
@@ -426,29 +424,37 @@ fn status_to_state(packet: &Packet, stateref: &Arc<Mutex<HeatPumpState>>) -> any
         Some(StatusPacketType::Settings) => {
             // settings
             state.poweron = packet.data[3] != 0;
-            state.isee = packet.data[4] & 0b00001000 > 0;
+            state.isee_present = packet.data[4] & 0b00001000 > 0;
             // drop the isee bit when computing the mode
             state.mode = HeatPumpMode::from_repr((packet.data[4] & 0b11110111) as usize).unwrap(); 
 
             // I don't really understand why the temperature is done this way, but it's what this does so I assume its right? https://github.com/SwiCago/HeatPump/blob/b4c34f1f66e45affe70a556a955db02a0fa80d81/src/HeatPump.cpp#L649
             if packet.data[11] != 0 {
-                state.desired_temperature = ((packet.data[11] - 128) as f32)/2.0;
+                state.desired_temperature_c = ((packet.data[11] - 128) as f32)/2.0;
             } else {
-                state.desired_temperature = (packet.data[5] + 10) as f32; // MAP
+                state.desired_temperature_c = (packet.data[5] + 10) as f32; 
             }
 
             state.fan_speed = FanSpeed::from_repr(packet.data[6] as usize).unwrap();
             state.vane = VaneDirection::from_repr(packet.data[7] as usize).unwrap();
-            state.widevane = WideVaneDirection::from_repr((packet.data[10]  & 0x0F) as usize).unwrap();
-            state.widevane_adj = (packet.data[10] & 0xF0) == 0x80;
+            state.widevane = WideVaneDirection::from_repr(packet.data[10] as usize).unwrap();
         }
         Some(StatusPacketType::RoomTemperature) => {
             if packet.data[6] != 0 {
-                state.room_temperature = ((packet.data[6] - 128) as f32)/2.0;
+                state.room_temperature_c = ((packet.data[6] - 128) as f32)/2.0;
             } else {
-                state.room_temperature = (packet.data[3] + 10) as f32; // MAP
+                state.room_temperature_c = (packet.data[3] + 10) as f32; 
             }
-            state.last_room_temperature_data = Some(packet.data.clone());
+
+
+            if packet.data[7] != 0 {
+                state.room_temperature_c_2 = ((packet.data[7] - 128) as f32)/2.0;
+            } else {
+                state.room_temperature_c_2 = -999.0;
+            }
+
+            // byte 8 seems to have isee info direct/indirect for some reason
+            state.isee_mode = ISeeMode::from_repr(packet.data[8] as usize).unwrap();
         }
         Some(StatusPacketType::ErrorCodeMaybe) => {
             if packet.data[4] == 0x80 {
@@ -458,18 +464,22 @@ fn status_to_state(packet: &Packet, stateref: &Arc<Mutex<HeatPumpState>>) -> any
                 state.error_data = Some(packet.data.clone());
             }
         }
+        Some(StatusPacketType::Timers) => {
+            // ignore timers
+        }
         Some(StatusPacketType::MiscInfo) => {
-            state.compressorfreq = packet.data[3];
+            //state.compressorfreq = packet.data[3];  // does not appear in my heatpump
             state.operating = packet.data[4];
         }
         Some(StatusPacketType::StandbyMode) => {
-            state.last_standby_mode_data = Some(packet.data.clone());
+            // not sure what to do with this right now...
         }
         _ => {
-            state.unknown_status_last_data.insert(packet.data[0], packet.data.clone());
+            info!("unrecognized status packet type: {}", packet.data[0]);
         }
     }
-    
+
+    state.last_status_packets.insert(packet.data[0], packet.data.clone());
 
     Ok(())
 }
