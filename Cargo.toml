@@ -34,6 +34,7 @@ anyhow = { version = "1" }
 embedded-svc = { version = "0.26.4" }
 paste = { version = "1.0.14"}
 serde_json = {version="1.0.111"}
+strum_macros = {version="0.25.3"}
 
 [build-dependencies]
 embuild = "0.31.3"

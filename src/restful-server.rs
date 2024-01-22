@@ -1,5 +1,7 @@
 #![feature(const_trait_impl)]
 
+use std::collections::HashMap;
+use strum_macros::FromRepr;
 use log::info;
 use paste::paste;
 
@@ -49,14 +51,44 @@ macro_rules! pin_from_envar {
     };
 }
 
-
+#[derive(Debug)]
 struct HeatPumpState {
-    pub connected: bool
+    pub connected: bool,
+    pub poweron: bool,
+    pub isee: bool,
+    pub mode: HeatPumpMode,
+    pub desired_temperature: f32,
+    pub fan_speed: FanSpeed,
+    pub vane: VaneDirection,
+    pub widevane: WideVaneDirection,
+    pub widevane_adj: bool,
+    pub room_temperature: f32,
+    pub last_room_temperature_data: Option<Vec<u8>>,
+    pub operating: u8,
+    pub compressorfreq: u8,
+    pub last_standby_mode_data: Option<Vec<u8>>,
+    pub error_data: Option<Vec<u8>>,
+    pub unknown_status_last_data: HashMap<u8, Vec<u8>>,
 }
 impl HeatPumpState {
     pub fn new() -> Self{
         Self {
-            connected: false
+            connected: false,
+            poweron: false,
+            isee: false,
+            mode: HeatPumpMode::Off,
+            desired_temperature: -999.0,
+            fan_speed: FanSpeed::Auto,
+            vane: VaneDirection::Auto,
+            widevane: WideVaneDirection::Mid,
+            widevane_adj: false,
+            room_temperature: -999.0,
+            last_room_temperature_data: None,
+            operating: 0,
+            compressorfreq: 0,
+            last_standby_mode_data: None,
+            error_data: None,
+            unknown_status_last_data: HashMap::new(),
         }
     }
 }
@@ -155,6 +187,61 @@ impl Packet {
     }
 }
 
+#[derive(Clone, Copy, FromRepr, Debug)]
+enum StatusPacketType {
+    Settings = 2,
+    RoomTemperature = 3,
+    ErrorCodeMaybe = 4, // not sure, but this is what https://github.com/SwiCago/HeatPump/issues/39 seems to suggest?
+    Timers = 5,
+    MiscInfo = 6,
+    StandbyMode = 9, // Also unsure but its what https://github.com/SwiCago/HeatPump thinks and is also asked for by Kumo Cloud...
+}
+
+#[derive(Clone, Copy, FromRepr, Debug)]
+enum HeatPumpMode {
+    Off = 0,
+    Heat = 1,
+    Dry = 2,
+    Cool = 3,
+    Fan = 7,
+    Auto = 8,
+}
+
+#[derive(Clone, Copy, FromRepr, Debug)]
+enum FanSpeed {
+    Auto = 0,
+    SuperQuiet = 1,
+    Quiet = 2,
+    Low = 3,
+    Powerful = 5,
+    SuperPowerful = 6,
+}
+//TODO: Check these!
+
+#[derive(Clone, Copy, FromRepr, Debug)]
+enum VaneDirection {
+    Auto = 0,
+    Horizontal=1,
+    MidHorizontal=2,
+    Midpoint=3,
+    MidVertical=4,
+    Vertical=5,
+    Swing=7,
+}
+//TODO: Check these!
+
+#[derive(Clone, Copy, FromRepr, Debug)]
+enum WideVaneDirection {
+    FarLeft=1,
+    Left=2,
+    Mid=3,
+    Right=4,
+    FarRight=5,
+    Split=8,
+    Swing=0x0c,
+}
+
+
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -187,7 +274,6 @@ fn main() -> anyhow::Result<()> {
         Option::<AnyIOPin>::None,
         &uart_config
     ).unwrap();
-    let uart_byte_time: u64 = (100 / uart.baudrate()?.0 + 1) as u64;
 
     #[cfg(feature="ws2182onboard")]
     npx.set(Rgb::new(20, 5, 0))?;
@@ -207,10 +293,6 @@ fn main() -> anyhow::Result<()> {
 
 
     info!("Setup complete!");
-    //let mut test_send: Option<[u8; 22]> = Some([252,  66,   1,  48,  16,   9,   0,   0,   0,   0,   0,   0,   0,  0,   0,   0,   0,   0,   0,   0,   0, 116]);
-    let mut test_send: Option<Packet> = Some(Packet::new_type_size(0x42, 16));
-    test_send.as_mut().unwrap().data[0] = 9;
-    test_send.as_mut().unwrap().set_checksum();
 
     // serve and loop forever...
     loop {
@@ -231,29 +313,43 @@ fn main() -> anyhow::Result<()> {
 
         // This is the business part of the loop
         
+        let data_to_send = false;
         if connected {
-            if test_send.is_some() {
-                // Note: the take() changes test_send to None, which is what we want because then the next time through the loop we won't send it again
-                uart.write(&test_send.take().unwrap().to_bytes())?;
-                test_send = None;
-                std::thread::sleep(Duration::from_millis(uart_byte_time*30));
-            }
+            if data_to_send {
+                // NOT IMPLEMENTED YET
+            } else {
+                // First make sure there's no junk left unread in the uart
+                while uart.remaining_read()? > 0 { uart.read(&mut [0u8; 1], 1)?; }
 
-            // read out anything waiting in the uart
-            let mut bytes_read: Vec<u8> = Vec::new();
-            let mut rbuf = [0u8; 16+6];  // typical packet size
-            while uart.remaining_read()? > 0 {
-                let nread = uart.read(&mut rbuf, 1)?;
-                for i in 0..nread { bytes_read.push(rbuf[i as usize]); }
-                std::thread::sleep(Duration::from_millis(uart_byte_time*2));  // wait a full two byte times just in case
-            }
+                // ask for status from a subset of status packets
+                for ptype in [StatusPacketType::Settings, 
+                              StatusPacketType::RoomTemperature, 
+                              StatusPacketType::ErrorCodeMaybe, 
+                              StatusPacketType::MiscInfo, 
+                              StatusPacketType::StandbyMode
+                             ].iter() {
+                    let mut packet = Packet::new_type_size(0x42, 16);
+                    packet.data[0] = *ptype as u8;
+                    packet.set_checksum();
+                    uart.write(&packet.to_bytes())?;
 
-            if bytes_read.len() > 0 {
-                info!("read {} bytes: {:?}", bytes_read.len(), bytes_read);
-                let packet = Packet::from_bytes(&bytes_read)?;
-                info!("packet: {packet:?}");
+                    std::thread::sleep(Duration::from_millis(100));
+
+                    let status_packet = match read_packet(&uart)? {
+                        Some(p) => { p }
+                        None => {
+                            info!("No response to status packet request, assuming disconnected");
+                            state.lock().unwrap().connected = false;
+                            break;
+                        }
+                    };
+                    
+                    status_to_state(&status_packet, &state)?;
+
+                }
+
+                
             }
-            
 
 
         } else {
@@ -292,6 +388,90 @@ fn main() -> anyhow::Result<()> {
             std::thread::sleep(sleepdur);
         }
         
+    }
+}
+
+fn status_to_state(packet: &Packet, stateref: &Arc<Mutex<HeatPumpState>>) -> anyhow::Result<()> {
+    if packet.packet_type != 0x62 {
+        anyhow::bail!("Packet is not a status reply packet!");
+    } 
+    if packet.data.len() != 16 {
+        anyhow::bail!("Status packet is not length 16");
+    }
+
+    let mut state = stateref.lock().unwrap();
+    if packet.data[0] == StatusPacketType::ErrorCodeMaybe as u8 {
+        anyhow::bail!("Status packet does not have expected h2 value");
+    } else if packet.data[0] != StatusPacketType::ErrorCodeMaybe as u8 {
+        anyhow::bail!("Status packet does not have expected h3 value");
+    }
+    match StatusPacketType::from_repr(packet.data[0] as usize) {
+        Some(StatusPacketType::Settings) => {
+            // settings
+            state.poweron = packet.data[3] != 0;
+            state.isee = packet.data[4] & 0b00001000 > 0;
+            // drop the isee bit when computing the mode
+            state.mode = HeatPumpMode::from_repr((packet.data[4] & 0b11110111) as usize).unwrap(); 
+
+            // I don't really understand why the temperature is done this way, but it's what this does so I assume its right? https://github.com/SwiCago/HeatPump/blob/b4c34f1f66e45affe70a556a955db02a0fa80d81/src/HeatPump.cpp#L649
+            if packet.data[11] != 0 {
+                state.desired_temperature = ((packet.data[11] - 128) as f32)/2.0;
+            } else {
+                state.desired_temperature = (packet.data[5] + 10) as f32; // MAP
+            }
+
+            state.fan_speed = FanSpeed::from_repr(packet.data[6] as usize).unwrap();
+            state.vane = VaneDirection::from_repr(packet.data[7] as usize).unwrap();
+            state.widevane = WideVaneDirection::from_repr((packet.data[10]  & 0x0F) as usize).unwrap();
+            state.widevane_adj = (packet.data[10] & 0xF0) == 0x80;
+        }
+        Some(StatusPacketType::RoomTemperature) => {
+            if packet.data[6] != 0 {
+                state.room_temperature = ((packet.data[6] - 128) as f32)/2.0;
+            } else {
+                state.room_temperature = (packet.data[3] + 10) as f32; // MAP
+            }
+            state.last_room_temperature_data = Some(packet.data.clone());
+        }
+        Some(StatusPacketType::ErrorCodeMaybe) => {
+            if packet.data[4] == 0x80 {
+                state.error_data = None
+            } else {
+
+                state.error_data = Some(packet.data.clone());
+            }
+        }
+        Some(StatusPacketType::MiscInfo) => {
+            state.compressorfreq = packet.data[3];
+            state.operating = packet.data[4];
+        }
+        Some(StatusPacketType::StandbyMode) => {
+            state.last_standby_mode_data = Some(packet.data.clone());
+        }
+        _ => {
+            state.unknown_status_last_data.insert(packet.data[0], packet.data.clone());
+        }
+    }
+    
+
+    Ok(())
+}
+
+fn read_packet(uart: &uart::UartDriver) -> anyhow::Result<Option<Packet>> {
+    let uart_byte_time: u64 = (100 / uart.baudrate()?.0 + 1) as u64;
+
+    // read out anything waiting in the uart
+    let mut bytes_read: Vec<u8> = Vec::new();
+    let mut rbuf = [0u8; 16+6];  // typical packet size
+    while uart.remaining_read()? > 0 {
+        let nread = uart.read(&mut rbuf, 1)?;
+        for i in 0..nread { bytes_read.push(rbuf[i as usize]); }
+        std::thread::sleep(Duration::from_millis(uart_byte_time*2));  // wait a full two byte times just in case
+    }
+
+    match bytes_read.len() {
+        0 => {Ok(None)},
+        _ => { Ok(Some(Packet::from_bytes(&bytes_read)?))}
     }
 }
 
