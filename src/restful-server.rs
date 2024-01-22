@@ -1,6 +1,7 @@
 #![feature(const_trait_impl)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{compiler_fence, Ordering};
 use strum_macros::FromRepr;
 use log::info;
 use paste::paste;
@@ -28,14 +29,17 @@ use esp_idf_svc::{
 mod ws2812b;
 use ws2812b::{Ws2812B, Rgb};
 
+use serde::Serialize;
 use serde_json::json;
 
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
 const WIFI_CHANNEL: &str = env!("WIFI_CHANNEL");
+const WIFI_HALT_ON_NOT_FOUND: &str = env!("WIFI_HALT_ON_NOT_FOUND");
 
 const LOOP_MIN_LENGTH:Duration = Duration::from_millis(2);
 const CONNECT_DELAY:Duration = Duration::from_millis(2000);
+const STATUS_REQUEST_DELAY:Duration = Duration::from_millis(1000);
 
 const CONNECT_BYTES: [u8; 8] = [0xfc, 0x5a, 0x01, 0x30, 0x02, 0xca, 0x01, 0xa8];
 
@@ -51,7 +55,7 @@ macro_rules! pin_from_envar {
     };
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct HeatPumpState {
     pub connected: bool,
     pub poweron: bool,
@@ -187,7 +191,7 @@ impl Packet {
     }
 }
 
-#[derive(Clone, Copy, FromRepr, Debug)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
 enum StatusPacketType {
     Settings = 2,
     RoomTemperature = 3,
@@ -197,7 +201,7 @@ enum StatusPacketType {
     StandbyMode = 9, // Also unsure but its what https://github.com/SwiCago/HeatPump thinks and is also asked for by Kumo Cloud...
 }
 
-#[derive(Clone, Copy, FromRepr, Debug)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
 enum HeatPumpMode {
     Off = 0,
     Heat = 1,
@@ -207,7 +211,7 @@ enum HeatPumpMode {
     Auto = 8,
 }
 
-#[derive(Clone, Copy, FromRepr, Debug)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
 enum FanSpeed {
     Auto = 0,
     SuperQuiet = 1,
@@ -218,7 +222,7 @@ enum FanSpeed {
 }
 //TODO: Check these!
 
-#[derive(Clone, Copy, FromRepr, Debug)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
 enum VaneDirection {
     Auto = 0,
     Horizontal=1,
@@ -230,7 +234,7 @@ enum VaneDirection {
 }
 //TODO: Check these!
 
-#[derive(Clone, Copy, FromRepr, Debug)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
 enum WideVaneDirection {
     FarLeft=1,
     Left=2,
@@ -294,11 +298,13 @@ fn main() -> anyhow::Result<()> {
 
     info!("Setup complete!");
 
+    let mut last_status_request = Instant::now() - STATUS_REQUEST_DELAY;
+
     // serve and loop forever...
     loop {
         let loopstart = Instant::now();
 
-        let connected = state.lock().unwrap().connected;
+        let connected = { state.lock().unwrap().connected };  // unsure if that is needed but maybe?
 
         // update the LED state at the start of the loop based on connected status
         #[cfg(feature="ws2182onboard")]
@@ -317,10 +323,12 @@ fn main() -> anyhow::Result<()> {
         if connected {
             if data_to_send {
                 // NOT IMPLEMENTED YET
-            } else {
+            } else if last_status_request.elapsed() > STATUS_REQUEST_DELAY {
+                info!("Requesting status");
                 // First make sure there's no junk left unread in the uart
                 while uart.remaining_read()? > 0 { uart.read(&mut [0u8; 1], 1)?; }
 
+                let mut all_done = false;
                 // ask for status from a subset of status packets
                 for ptype in [StatusPacketType::Settings, 
                               StatusPacketType::RoomTemperature, 
@@ -328,12 +336,20 @@ fn main() -> anyhow::Result<()> {
                               StatusPacketType::MiscInfo, 
                               StatusPacketType::StandbyMode
                              ].iter() {
+                    all_done = false;
                     let mut packet = Packet::new_type_size(0x42, 16);
                     packet.data[0] = *ptype as u8;
                     packet.set_checksum();
                     uart.write(&packet.to_bytes())?;
 
-                    std::thread::sleep(Duration::from_millis(100));
+                    // wait for the delay time, if no response after that, we probably got disconnected?
+                    let wait_start = Instant::now();
+                    while wait_start.elapsed() < STATUS_REQUEST_DELAY {
+                        if uart.remaining_read()? > 0 {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
 
                     let status_packet = match read_packet(&uart)? {
                         Some(p) => { p }
@@ -345,11 +361,16 @@ fn main() -> anyhow::Result<()> {
                     };
                     
                     status_to_state(&status_packet, &state)?;
-
+                    all_done = true;
+                } 
+                if all_done {
+                    last_status_request = Instant::now();
+                    info!("Done requesting status, have {} ms reminaing before next request", STATUS_REQUEST_DELAY.as_millis());     
                 }
-
-                
-            }
+            } 
+            // else{
+            //     info!("Not requesting status, have {} ms reminaing before next request", (STATUS_REQUEST_DELAY - last_status_request.elapsed()).as_millis());  
+            // }
 
 
         } else {
@@ -400,11 +421,7 @@ fn status_to_state(packet: &Packet, stateref: &Arc<Mutex<HeatPumpState>>) -> any
     }
 
     let mut state = stateref.lock().unwrap();
-    if packet.data[0] == StatusPacketType::ErrorCodeMaybe as u8 {
-        anyhow::bail!("Status packet does not have expected h2 value");
-    } else if packet.data[0] != StatusPacketType::ErrorCodeMaybe as u8 {
-        anyhow::bail!("Status packet does not have expected h3 value");
-    }
+
     match StatusPacketType::from_repr(packet.data[0] as usize) {
         Some(StatusPacketType::Settings) => {
             // settings
@@ -499,7 +516,8 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
 
     // first scan to check that there's a match.
     let mut ssid_match = false;
-    for result in wifi.scan()?.iter(){
+    let scan_results = wifi.scan()?;
+    for result in scan_results.iter(){
         if SSID == result.ssid.as_str() {
             ssid_match = true;
             break;
@@ -509,8 +527,14 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
     if ssid_match {
         info!("found ssid {}, connecting", SSID);
         wifi.connect()?;
+    } else if WIFI_HALT_ON_NOT_FOUND == "yes" {
+        info!("Did not find ssid in list {:?}. Halting!", scan_results);
+        loop {
+            compiler_fence(Ordering::SeqCst);
+        }
     } else {
-        info!("Did not find ssid, creating AP w/ ssid: {}", SSID);
+        info!("Did not find ssid in list below, so creating AP w/ ssid: {}", SSID);
+        info!("Scan Results: {:?}", scan_results);
         wifi.stop()?;
         
         let wifi_configuration_ap = eswifi::Configuration::AccessPoint(eswifi::AccessPointConfiguration {
@@ -554,10 +578,15 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
     let inner_state = state.clone();
 
     server.fn_handler("/status.json", http::Method::Get, move |req| {
-        let state = inner_state.lock().unwrap();
-        let resp = json!({
-            "connected": state.connected
-        });
+        let stateg = inner_state.lock().unwrap();
+        let resp = if stateg.connected {
+            serde_json::to_value(&stateg as &HeatPumpState).unwrap()
+        } else {
+            let j = json!({
+                "connected": false
+            });
+            j
+        };
         
         let response_headers = &[("Content-Type", "application/json")];
         req.into_response(200, Some("OK"), response_headers)?.write(resp.to_string().as_bytes())?;

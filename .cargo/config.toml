@@ -21,5 +21,6 @@ RX_PIN_NUM = "5"
 LED_PIN_NUM = "8"
 WIFI_SSID = "defaultssid"
 WIFI_PASS = "defaultpass"
+WIFI_HALT_ON_NOT_FOUND = "yes"
 # only used in AP mode
 WIFI_CHANNEL = "11"
