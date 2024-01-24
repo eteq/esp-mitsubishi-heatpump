@@ -19,6 +19,8 @@ use hal::rmt;
 use hal::sys::EspError;
     
 use embedded_svc::wifi as eswifi;
+use embedded_svc::http::Headers;
+use embedded_svc::io::{Read, Write};
 
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -30,7 +32,7 @@ use esp_idf_svc::{
 mod ws2812b;
 use ws2812b::{Ws2812B, Rgb};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const SSID: &str = env!("WIFI_SSID");
@@ -46,6 +48,8 @@ const CONNECT_BYTES: [u8; 8] = [0xfc, 0x5a, 0x01, 0x30, 0x02, 0xca, 0x01, 0xa8];
 
 // Not sure how much is needed, but this is the default in an esp example so <shrug>
 const HTTP_SERVER_STACK_SIZE: usize = 10240;
+// maximum payload for post requests
+const HTTP_SERVER_MAX_LEN: usize = 512;
 
 
 macro_rules! pin_from_envar {
@@ -57,7 +61,8 @@ macro_rules! pin_from_envar {
 }
 
 #[derive(Debug, Serialize)]
-struct HeatPumpState {
+struct HeatPumpStatus {
+    // The state of the heatpump, generally as reported by the heatpump or carried around as part of the state of the server
     pub connected: bool,
     pub poweron: bool,
     pub isee_present: bool,
@@ -66,14 +71,15 @@ struct HeatPumpState {
     pub fan_speed: FanSpeed,
     pub vane: VaneDirection,
     pub widevane: WideVaneDirection,
-    pub isee_mode: ISeeMode,
+    pub isee_mode: ISeeMode, // This might be incorrect?
     pub room_temperature_c: f32,
     pub room_temperature_c_2: f32,
     pub operating: u8,
     pub error_data: Option<Vec<u8>>,
     pub last_status_packets: HashMap<u8, Vec<u8>>,
+    pub desired_settings: Option<HeatPumpSetting>,
 }
-impl HeatPumpState {
+impl HeatPumpStatus {
     pub fn new() -> Self{
         Self {
             connected: false,
@@ -90,7 +96,81 @@ impl HeatPumpState {
             operating: 0,
             error_data: None,
             last_status_packets: HashMap::new(),
+            desired_settings: None,
         }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HeatPumpSetting {
+    // The desired state of the heatpump as requrest by user
+    pub poweron: Option<bool>,
+    pub mode: Option<HeatPumpMode>,
+    pub desired_temperature_c: Option<f32>,
+    pub fan_speed: Option<FanSpeed>,
+    pub vane: Option<VaneDirection>,
+    pub widevane: Option<WideVaneDirection>,
+}
+
+
+impl HeatPumpSetting {
+    #[allow(dead_code)]
+    pub fn new() -> Self{
+
+        Self {
+            poweron: None,
+            mode: None,
+            desired_temperature_c: None,
+            fan_speed: None,
+            vane: None,
+            widevane: None,
+        }
+    }
+
+    pub fn to_packet(&self) -> Packet {
+        let mut packet = Packet::new_type_size(0x41, 16);
+        packet.data[0] = 1; // this sets the regular standard "set" command mode
+
+        //power
+        if self.poweron.is_some() {
+            packet.data[1] |= 1;
+            packet.data[3] = self.poweron.unwrap() as u8;
+        } 
+
+        //mode
+        if self.mode.is_some() {
+            packet.data[1] |= 1 << 1;
+            packet.data[4] = self.mode.unwrap() as u8;
+        } 
+
+        //temperature
+        if self.desired_temperature_c.is_some() {
+            // swicago suggests there's a lower fidelity temperature mode setting on data byte 5, but this one seems to work and be better
+            packet.data[1] |= 1 << 2;
+            packet.data[14] = ((self.desired_temperature_c.unwrap() * 2.0) as u8) + 128
+        } 
+
+        //fan speed
+        if self.fan_speed.is_some() {
+            packet.data[1] |= 1 << 3;
+            packet.data[6] = self.fan_speed.unwrap() as u8;
+        } 
+
+        //vane
+        if self.vane.is_some() {
+            packet.data[1] |= 1 << 4;
+            packet.data[7] = self.vane.unwrap() as u8;
+        } 
+
+        //widevane
+        if self.widevane.is_some() {
+            packet.data[2] |= 1;
+            packet.data[13] = self.widevane.unwrap() as u8;
+        } 
+
+        packet.set_checksum();
+
+        packet
     }
 }
 
@@ -188,7 +268,7 @@ impl Packet {
     }
 }
 
-#[derive(Clone, Copy, FromRepr, Debug, Serialize, EnumIter)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize, Deserialize, EnumIter)]
 enum StatusPacketType {
     Settings = 2,
     RoomTemperature = 3,
@@ -198,7 +278,7 @@ enum StatusPacketType {
     StandbyMode = 9, // Also unsure but its what https://github.com/SwiCago/HeatPump thinks and is also asked for by Kumo Cloud...
 }
 
-#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize, Deserialize)]
 enum HeatPumpMode {
     Off = 0,
     Heat = 1,
@@ -208,7 +288,7 @@ enum HeatPumpMode {
     Auto = 8,
 }
 
-#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize, Deserialize)]
 enum FanSpeed {
     Auto = 0,
     Quiet = 1,
@@ -218,7 +298,7 @@ enum FanSpeed {
     VeryHigh = 6,
 }
 
-#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize, Deserialize)]
 enum VaneDirection {
     Auto = 0,
     Horizontal=1,
@@ -229,7 +309,7 @@ enum VaneDirection {
     Swing=7,
 }
 
-#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize, Deserialize)]
 enum WideVaneDirection {
     FarLeft=1,
     Left=2,
@@ -241,7 +321,7 @@ enum WideVaneDirection {
     ISee=0x80,
 }
 
-#[derive(Clone, Copy, FromRepr, Debug, Serialize)]
+#[derive(Clone, Copy, FromRepr, Debug, Serialize, Deserialize)]
 enum ISeeMode {
     Unknown=254,
     Direct=2,
@@ -307,7 +387,10 @@ fn main() -> anyhow::Result<()> {
     loop {
         let loopstart = Instant::now();
 
-        let connected = { state.lock().unwrap().connected };  // unsure if that is needed but maybe?
+        let (connected, data_to_send) = { 
+            let realstate = state.lock().unwrap();
+            (realstate.connected, realstate.desired_settings.is_some())
+         };  
 
         // update the LED state at the start of the loop based on connected status
         #[cfg(feature="ws2182onboard")]
@@ -322,10 +405,14 @@ fn main() -> anyhow::Result<()> {
 
         // This is the business part of the loop
         
-        let data_to_send = false;
         if connected {
             if data_to_send {
-                // NOT IMPLEMENTED YET
+                let mut realstate = state.lock().unwrap();
+
+                let packet_to_send = realstate.desired_settings.as_ref().unwrap().to_packet();
+                info!("WOULD HAVE WRITTEN: {:?}", packet_to_send.to_bytes());
+                //uart.write(&packet_to_send.to_bytes())?;
+                realstate.desired_settings = None;
             } else if last_status_request.elapsed() > STATUS_REQUEST_DELAY {
                 info!("Requesting status");
                 // First make sure there's no junk left unread in the uart
@@ -410,7 +497,8 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn status_to_state(packet: &Packet, stateref: &Arc<Mutex<HeatPumpState>>) -> anyhow::Result<()> {
+
+fn status_to_state(packet: &Packet, stateref: &Arc<Mutex<HeatPumpStatus>>) -> anyhow::Result<()> {
     if packet.packet_type != 0x62 {
         anyhow::bail!("Packet is not a status reply packet!");
     } 
@@ -582,15 +670,15 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
     Ok(wifi)
 }
 
-fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<HeatPumpState>> , EspError> {
-    let state = Arc::new(Mutex::new(HeatPumpState::new()));
+fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<HeatPumpStatus>> , EspError> {
+    let state = Arc::new(Mutex::new(HeatPumpStatus::new()));
 
-    let inner_state = state.clone();
+    let inner_state1 = state.clone();
 
     server.fn_handler("/status.json", http::Method::Get, move |req| {
-        let stateg = inner_state.lock().unwrap();
+        let stateg = inner_state1.lock().unwrap();
         let resp = if stateg.connected {
-            serde_json::to_value(&stateg as &HeatPumpState).unwrap()
+            serde_json::to_value(&stateg as &HeatPumpStatus).unwrap()
         } else {
             let j = json!({
                 "connected": false
@@ -600,6 +688,38 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
         
         let response_headers = &[("Content-Type", "application/json")];
         req.into_response(200, Some("OK"), response_headers)?.write(resp.to_string().as_bytes())?;
+        Ok(())
+    })?;
+
+
+    let inner_state2 = state.clone();
+
+    server.fn_handler("/set.json", http::Method::Post, move |mut req| {
+        let len = req.content_len().unwrap_or(0) as usize;
+        if len > HTTP_SERVER_MAX_LEN {
+            req.into_status_response(413)?
+                .write_all("Request too big".as_bytes())?;
+            return Ok(());
+        }
+
+        let mut buf = vec![0; len];
+        req.read_exact(&mut buf)?;
+        
+        match serde_json::from_slice::<HeatPumpSetting>(&buf) {
+            Ok(form) => {
+                let jval = serde_json::to_value(&form).unwrap();
+
+                let response_headers = &[("Content-Type", "application/json")];
+                req.into_response(200, Some("OK"), response_headers)?.write(jval.to_string().as_bytes())?;
+
+                let mut stateg = inner_state2.lock().unwrap();
+                stateg.desired_settings = Some(form);
+            }
+            Err(e) => {
+                req.into_status_response(400)?.write_all(format!("JSON error: {}", e).as_bytes())?;
+            }
+        }
+        
         Ok(())
     })?;
 
