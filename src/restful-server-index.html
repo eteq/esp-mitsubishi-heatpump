@@ -1,0 +1,191 @@
+<!DOCTYPE HTML>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ESP-heatpump</title>
+    <style type="text/css">
+    </style>
+</head>
+
+<body>
+    <form id="the-form" action="javascript:;" onsubmit="submitForm(this)">
+
+        <fieldset>
+            <legend>Power</legend>
+
+            <input type="checkbox" id="power-send" name="power-send" value="power-send"
+                   oninput="document.getElementById(this.id.slice(0, -5)).disabled = !this.checked">
+            <label for="power-send"> Send? </label>
+            <input type="checkbox" id="power" name="power" value="power" disabled>
+            <label for="power"> Power On? </label>
+        </fieldset>
+
+        <fieldset>
+            <legend>Mode</legend>
+
+            <input type="checkbox" id="mode-send" name="mode-send" value="mode-send"
+                   oninput="document.getElementById(this.id.slice(0, -5)).disabled = !this.checked">
+            <label for="mode-send"> Send? </label>
+            
+            <select id="mode" name="mode" disabled>
+                <option value="Auto" selected>Auto</option>
+                <option value="Off" selected>Off</option>
+                <option value="Fan" selected>Fan</option>
+                <option value="Heat" selected>Heat</option>
+                <option value="Cool" selected>Cool</option>
+                <option value="Dry" selected>Dry</option>
+            </select>
+        </fieldset>
+
+        <fieldset>
+            <legend>Desired Temperature (deg C)</legend>
+
+            <input type="checkbox" id="temp-send" name="temp-send" value="temp-send"
+                   oninput="document.getElementById(this.id.slice(0, -5)).disabled = !this.checked">
+            <label for="temp-send"> Send? </label>
+            
+            <input id="temp" type="range" value="20" min="0" max="50" step=0.5 oninput="this.nextElementSibling.value = this.value" disabled>
+            <output>20</output>
+
+        </fieldset>
+
+        <fieldset>
+            <legend>Fan Speed</legend>
+
+            <input type="checkbox" id="fan-send" name="fan-send" value="fan-send"
+                   oninput="document.getElementById(this.id.slice(0, -5)).disabled = !this.checked">
+            <label for="fan-send"> Send? </label>
+            
+            <select id="fan" name="fan" disabled>
+                <option value="Auto" selected>Auto</option>
+                <option value="Quiet">Quiet</option>
+                <option value="Low">Low</option>
+                <option value="Med">Med</option>
+                <option value="High">High</option>
+                <option value="VeryHigh">VeryHigh</option>
+            </select>
+        </fieldset>
+
+        <fieldset>
+            <legend>Vane Direction</legend>
+
+            <input type="checkbox" id="vane-send" name="vane-send" value="vane-send"
+                   oninput="document.getElementById(this.id.slice(0, -5)).disabled = !this.checked">
+            <label for="vane-send"> Send? </label>
+            
+            <select id="vane" name="vane" disabled>
+                <option value="Auto" selected>Auto</option>
+                <option value="Horizontal">Horizontal</option>
+                <option value="MidHorizontal">MidHorizontal</option>
+                <option value="Midpoint">Midpoint</option>
+                <option value="MidVertical">MidVertical</option>
+                <option value="Vertical">Vertical</option>
+                <option value="Swing">Swing</option>
+            </select>
+        </fieldset>
+
+        <fieldset>
+            <legend>Widevane</legend>
+
+            <input type="checkbox" id="wvane-send" name="wvane-send" value="wvane-send"
+                   oninput="document.getElementById(this.id.slice(0, -5)).disabled = !this.checked">
+            <label for="wvane-send"> Send? </label>
+            
+            <select id="wvane" name="wvane" disabled>
+                <option value="Auto" selected>Auto</option>
+                <option value="FarLeft">FarLeft</option>
+                <option value="Left">Left</option>
+                <option value="Mid">Mid</option>
+                <option value="Right">Right</option>
+                <option value="FarRight">FarRight</option>
+                <option value="Split">Split</option>
+                <option value="Swing">Swing</option>
+                <option value="ISee">ISee</option>
+            </select>
+        </fieldset>
+
+
+    <input type="submit" value="Submit">
+
+
+    <p id="outputp">
+        No results yet.
+    </p>
+
+    </form>
+
+
+    <script type="text/javascript">
+
+        async function submitForm(form) {
+            var j = constructJson(form);
+
+            var url = "http://" + window.location.host + "/set.json";
+
+            var output = document.getElementById('outputp');
+            try {
+                const response = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(j),
+                });
+
+                const result = await response.text();
+                output.innerHTML = "Sent data and got: " + result;
+            } catch (error) {
+                output.innerHTML = "Error: " + error;
+
+            }
+
+        }
+
+        function constructJson(form) {
+            var json = {};
+            
+            if (form.elements["power-send"].checked) {
+                json.poweron = form.elements["power"].checked;
+            } else {
+                json.poweron = null;
+            }
+            
+            if (form.elements["mode-send"].checked) {
+                json.mode = form.elements["mode"].value;
+            } else {
+                json.mode = null;
+            }
+            
+            if (form.elements["temp-send"].checked) {
+                json.desired_temperature_c = parseFloat(form.elements["temp"].value);
+            } else {
+                json.desired_temperature_c = null;
+            }
+            
+            if (form.elements["fan-send"].checked) {
+                json.fan_speed = form.elements["fan"].value;
+            } else {
+                json.fan_speed = null;
+            }
+            
+            if (form.elements["vane-send"].checked) {
+                json.vane = form.elements["vane"].value;
+            } else {
+                json.vane = null;
+            }
+            
+            if (form.elements["wvane-send"].checked) {
+                json.widevane = form.elements["wvane"].value;
+            } else {
+                json.widevane = null;
+            }
+
+            return json;
+        }
+
+    </script>
+</body>
+
+</html>

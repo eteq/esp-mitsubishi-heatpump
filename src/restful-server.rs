@@ -40,9 +40,11 @@ const PASSWORD: &str = env!("WIFI_PASS");
 const WIFI_CHANNEL: &str = env!("WIFI_CHANNEL");
 const WIFI_HALT_ON_NOT_FOUND: &str = env!("WIFI_HALT_ON_NOT_FOUND");
 
+static INDEX_HTML: &str = include_str!("restful-server-index.html");
+
 const LOOP_MIN_LENGTH:Duration = Duration::from_millis(2);
 const CONNECT_DELAY:Duration = Duration::from_millis(2000);
-const STATUS_REQUEST_DELAY:Duration = Duration::from_millis(1000);
+const RESPONSE_DELAY:Duration = Duration::from_millis(1000);
 
 const CONNECT_BYTES: [u8; 8] = [0xfc, 0x5a, 0x01, 0x30, 0x02, 0xca, 0x01, 0xa8];
 
@@ -381,7 +383,7 @@ fn main() -> anyhow::Result<()> {
 
     info!("Setup complete!");
 
-    let mut last_status_request = Instant::now() - STATUS_REQUEST_DELAY;
+    let mut last_status_request = Instant::now() - RESPONSE_DELAY;
 
     // serve and loop forever...
     loop {
@@ -410,10 +412,33 @@ fn main() -> anyhow::Result<()> {
                 let mut realstate = state.lock().unwrap();
 
                 let packet_to_send = realstate.desired_settings.as_ref().unwrap().to_packet();
-                info!("WOULD HAVE WRITTEN: {:?}", packet_to_send.to_bytes());
-                //uart.write(&packet_to_send.to_bytes())?;
+                info!("Writing to heat pump: {:?}", packet_to_send.to_bytes());
+                uart.write(&packet_to_send.to_bytes())?;
                 realstate.desired_settings = None;
-            } else if last_status_request.elapsed() > STATUS_REQUEST_DELAY {
+
+                // now check that we got a packet back
+                let wait_start = Instant::now();
+                while wait_start.elapsed() < RESPONSE_DELAY {
+                    if uart.remaining_read()? > 0 {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                match read_packet(&uart)? {
+                    Some(p) => { 
+                        if p.packet_type == 0x61 {
+                            info!("Got expected response to setting change request: {:?}", p);
+                        } else {
+                            panic!("Got unexpected packet type in response to setting change request: {:?}", p);
+                        }
+                    }
+                    None => {
+                        info!("No response to setting change request, assuming disconnected");
+                        state.lock().unwrap().connected = false;
+                    }
+                };
+
+            } else if last_status_request.elapsed() > RESPONSE_DELAY {
                 info!("Requesting status");
                 // First make sure there's no junk left unread in the uart
                 while uart.remaining_read()? > 0 { uart.read(&mut [0u8; 1], 1)?; }
@@ -429,7 +454,7 @@ fn main() -> anyhow::Result<()> {
 
                     // wait for the delay time, if no response after that, we probably got disconnected?
                     let wait_start = Instant::now();
-                    while wait_start.elapsed() < STATUS_REQUEST_DELAY {
+                    while wait_start.elapsed() < RESPONSE_DELAY {
                         if uart.remaining_read()? > 0 {
                             break;
                         }
@@ -450,11 +475,11 @@ fn main() -> anyhow::Result<()> {
                 } 
                 if all_done {
                     last_status_request = Instant::now();
-                    info!("Done requesting status, have {} ms reminaing before next request", STATUS_REQUEST_DELAY.as_millis());     
+                    info!("Done requesting status, have {} ms reminaing before next request", RESPONSE_DELAY.as_millis());     
                 }
             } 
             // else{
-            //     info!("Not requesting status, have {} ms reminaing before next request", (STATUS_REQUEST_DELAY - last_status_request.elapsed()).as_millis());  
+            //     info!("Not requesting status, have {} ms reminaing before next request", (RESPONSE_DELAY - last_status_request.elapsed()).as_millis());  
             // }
 
 
@@ -672,6 +697,14 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
 
 fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<HeatPumpStatus>> , EspError> {
     let state = Arc::new(Mutex::new(HeatPumpStatus::new()));
+
+    let index_handler = |req: http::server::Request<&mut http::server::EspHttpConnection>| {
+        req.into_ok_response()?.write(INDEX_HTML.as_bytes())?;
+        Ok(())
+    };
+    server.fn_handler("/", http::Method::Get, index_handler)?;
+    server.fn_handler("/index.html", http::Method::Get, index_handler)?;
+
 
     let inner_state1 = state.clone();
 
