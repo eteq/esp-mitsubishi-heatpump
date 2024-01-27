@@ -626,10 +626,10 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
 
     let wifi_configuration: eswifi::Configuration = eswifi::Configuration::Client(
         eswifi::ClientConfiguration {
-        ssid: SSID.into(),
+        ssid: SSID.try_into().unwrap(),
         bssid: None,
         auth_method: eswifi::AuthMethod::WPA2Personal,
-        password: PASSWORD.into(),
+        password: PASSWORD.try_into().unwrap(),
         channel: None,
     });
 
@@ -661,10 +661,10 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
         wifi.stop()?;
         
         let wifi_configuration_ap = eswifi::Configuration::AccessPoint(eswifi::AccessPointConfiguration {
-            ssid: SSID.into(),
+            ssid: SSID.try_into().unwrap(),
             ssid_hidden: false,
             auth_method: eswifi::AuthMethod::WPA2Personal,
-            password: PASSWORD.into(),
+            password: PASSWORD.try_into().unwrap(),
             channel: WIFI_CHANNEL.parse().unwrap(),
             secondary_channel: None,
             ..Default::default()
@@ -699,9 +699,10 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
     let state = Arc::new(Mutex::new(HeatPumpStatus::new()));
 
     let index_handler = |req: http::server::Request<&mut http::server::EspHttpConnection>| {
-        req.into_ok_response()?.write(INDEX_HTML.as_bytes())?;
-        Ok(())
+        req.into_ok_response()?
+            .write_all(INDEX_HTML.as_bytes())
     };
+
     server.fn_handler("/", http::Method::Get, index_handler)?;
     server.fn_handler("/index.html", http::Method::Get, index_handler)?;
 
@@ -720,8 +721,9 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
         };
         
         let response_headers = &[("Content-Type", "application/json")];
-        req.into_response(200, Some("OK"), response_headers)?.write(resp.to_string().as_bytes())?;
-        Ok(())
+        req.into_response(200, Some("OK"), response_headers)?
+        .write_all(resp.to_string().as_bytes())
+        .map(|_| ())
     })?;
 
 
@@ -732,28 +734,27 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
         if len > HTTP_SERVER_MAX_LEN {
             req.into_status_response(413)?
                 .write_all("Request too big".as_bytes())?;
-            return Ok(());
-        }
+        } else {
+            let mut buf = vec![0; len];
+            req.read_exact(&mut buf).unwrap();
+            
+            match serde_json::from_slice::<HeatPumpSetting>(&buf) {
+                Ok(form) => {
+                    let jval = serde_json::to_value(&form).unwrap();
 
-        let mut buf = vec![0; len];
-        req.read_exact(&mut buf)?;
-        
-        match serde_json::from_slice::<HeatPumpSetting>(&buf) {
-            Ok(form) => {
-                let jval = serde_json::to_value(&form).unwrap();
+                    let response_headers = &[("Content-Type", "application/json")];
+                    req.into_response(200, Some("OK"), response_headers)?.write(jval.to_string().as_bytes())?;
 
-                let response_headers = &[("Content-Type", "application/json")];
-                req.into_response(200, Some("OK"), response_headers)?.write(jval.to_string().as_bytes())?;
-
-                let mut stateg = inner_state2.lock().unwrap();
-                stateg.desired_settings = Some(form);
+                    let mut stateg = inner_state2.lock().unwrap();
+                    stateg.desired_settings = Some(form);
+                }
+                Err(e) => {
+                    req.into_status_response(400)?.write_all(format!("JSON error: {}", e).as_bytes())?;
+                }
             }
-            Err(e) => {
-                req.into_status_response(400)?.write_all(format!("JSON error: {}", e).as_bytes())?;
-            }
         }
         
-        Ok(())
+        Ok::<(), hal::io::EspIOError>(())
     })?;
 
     Ok(state)

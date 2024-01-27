@@ -167,10 +167,10 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
 
     let wifi_configuration: eswifi::Configuration = eswifi::Configuration::Client(
         eswifi::ClientConfiguration {
-        ssid: SSID.into(),
+        ssid: SSID.try_into().unwrap(),
         bssid: None,
         auth_method: eswifi::AuthMethod::WPA2Personal,
-        password: PASSWORD.into(),
+        password: PASSWORD.try_into().unwrap(),
         channel: None,
     });
 
@@ -195,10 +195,10 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
         wifi.stop()?;
         
         let wifi_configuration_ap = eswifi::Configuration::AccessPoint(eswifi::AccessPointConfiguration {
-            ssid: SSID.into(),
+            ssid: SSID.try_into().unwrap(),
             ssid_hidden: false,
             auth_method: eswifi::AuthMethod::WPA2Personal,
-            password: PASSWORD.into(),
+            password: PASSWORD.try_into().unwrap(),
             channel: WIFI_CHANNEL.parse().unwrap(),
             secondary_channel: None,
             ..Default::default()
@@ -230,9 +230,9 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
 }
 
 fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<Vec<WebSocketSession>>>,EspError> {
+    
     let index_handler = |req: http::server::Request<&mut http::server::EspHttpConnection>| {
-        req.into_ok_response()?.write(INDEX_HTML.as_bytes())?;
-        Ok(())
+        req.into_ok_response()?.write(INDEX_HTML.as_bytes()).map(|_| ())
     };
 
     server.fn_handler("/", http::Method::Get, index_handler)?;

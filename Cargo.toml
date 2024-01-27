@@ -19,7 +19,7 @@ default = ["std", "native", "ws2182onboard"]
 
 native = ["esp-idf-svc/native", "esp-idf-hal/native"]
 pio = ["esp-idf-svc/pio", "esp-idf-hal/pio"]
-std = ["alloc", "esp-idf-svc/binstart", "esp-idf-svc/std", "esp-idf-hal/std", "esp-idf-hal/esp-idf-sys"]
+std = ["alloc", "esp-idf-svc/binstart", "esp-idf-svc/std", "esp-idf-hal/std"]
 alloc = ["esp-idf-svc/alloc", "esp-idf-hal/alloc"]
 nightly = ["esp-idf-svc/nightly", "esp-idf-hal/nightly"]
 experimental = ["esp-idf-svc/experimental"]
@@ -28,10 +28,10 @@ ws2182onboard = [ ]
 
 [dependencies]
 log = { version = "0.4", default-features = false }
-esp-idf-svc = { version = "0.47.3", default-features = false }
-esp-idf-hal = { version = "0.42.5", default-features = false }
+esp-idf-svc = { version = "0.48.0", default-features = false }
+esp-idf-hal = { version = "0.43.0", default-features = false }
 anyhow = { version = "1" }
-embedded-svc = { version = "0.26.4" }
+embedded-svc = { version = "0.27.0" }
 paste = { version = "1.0.14"}
 serde = {version="1.0.195"}
 serde_json = {version="1.0.111"}
