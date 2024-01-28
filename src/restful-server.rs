@@ -25,8 +25,9 @@ use embedded_svc::io::{Read, Write};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     nvs::EspDefaultNvsPartition,
-    wifi::{BlockingWifi, EspWifi},
-    http
+    wifi::{BlockingWifi, EspWifi, WifiDeviceId},
+    http,
+    mdns,
 };
 
 mod ws2812b;
@@ -52,6 +53,8 @@ const CONNECT_BYTES: [u8; 8] = [0xfc, 0x5a, 0x01, 0x30, 0x02, 0xca, 0x01, 0xa8];
 const HTTP_SERVER_STACK_SIZE: usize = 10240;
 // maximum payload for post requests
 const HTTP_SERVER_MAX_LEN: usize = 512;
+
+const HTTP_PORT: u16 = 8923;
 
 
 macro_rules! pin_from_envar {
@@ -368,17 +371,40 @@ fn main() -> anyhow::Result<()> {
     npx.set(Rgb::new(20, 5, 0))?;
 
     // start up the wifi then try to configure the server
-    let _wifi = setup_wifi(peripherals.modem)?;
+    let (_wifi, wifimac) = setup_wifi(peripherals.modem)?;
 
     #[cfg(feature="ws2182onboard")]
     npx.set(Rgb::new(20, 20, 0))?;
 
     let server_configuration = http::server::Configuration {
         stack_size: HTTP_SERVER_STACK_SIZE,
+        http_port: HTTP_PORT,
         ..Default::default()
     };
     let mut server = http::server::EspHttpServer::new(&server_configuration)?;
     let state = setup_handlers(&mut server)?;
+
+    // now start mdns
+    let _mdnso = match wifimac {
+        Some (mac) => {
+            let mut mdns = mdns::EspMdns::take()?;
+
+            let macstr = format!("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+            mdns.set_hostname(["eteq-mheatpump-controller-", &macstr].concat())?;
+            mdns.set_instance_name(["Mitsubishi heatpump controller w/mac ", &macstr].concat())?;
+
+            mdns.add_service(None, "_eteq-mheatpump", "_tcp", HTTP_PORT, &[])?;
+
+            Some(mdns)
+        }
+        None => {
+            info!("No IP address, not starting mdns");
+            None
+        }
+    };
+
+
 
 
     info!("Setup complete!");
@@ -615,7 +641,7 @@ fn read_packet(uart: &uart::UartDriver) -> anyhow::Result<Option<Packet>> {
     }
 }
 
-fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspWifi<'a>>> {
+fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<(BlockingWifi<EspWifi<'a>>, Option<[u8; 6]>)> {
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
@@ -677,22 +703,25 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<BlockingWifi<EspW
 
     wifi.wait_netif_up()?;
 
-    match wifi.get_configuration()? {
+    let maco = match wifi.get_configuration()? {
         eswifi::Configuration::Client(c) => {
             let ip = wifi.wifi().sta_netif().get_ip_info()?;
             info!("Connected to {} w/ip info: {:?}", c.ssid, ip);
+            Some(wifi.wifi().get_mac(WifiDeviceId::Sta)?)
         },
         eswifi::Configuration::AccessPoint(a) => {
             let ip = wifi.wifi().ap_netif().get_ip_info()?;
             info!("Created AP {} w/ip info:  {:?}", a.ssid, ip);
+            Some(wifi.wifi().get_mac(WifiDeviceId::Ap)?)
         }
         _ => {
             info!("Unexpected configuration, no IP address");
+            None // Not sure what the configuration is so don't know which MAC to give
         }
 
     };
 
-    Ok(wifi)
+    Ok((wifi, maco))
 }
 
 fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<HeatPumpStatus>> , EspError> {

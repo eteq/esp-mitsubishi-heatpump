@@ -35,8 +35,8 @@ embedded-svc = { version = "0.27.0" }
 paste = { version = "1.0.14"}
 serde = {version="1.0.195"}
 serde_json = {version="1.0.111"}
-strum = "0.25"
-strum_macros = "0.25"
+strum = "0.26.1"
+strum_macros = "0.26.1"
 
 [build-dependencies]
 embuild = "0.31.3"
@@ -48,3 +48,6 @@ path = "src/packet-sender.rs"
 [[bin]]
 name = "restful-server"
 path = "src/restful-server.rs"
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/mdns", version = "1.2" }
