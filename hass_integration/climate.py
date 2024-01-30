@@ -1,9 +1,10 @@
-import datetime
+import time
+import asyncio
 import logging
 
 _LOGGER = logging.getLogger(__name__)
 
-from homeassistant.const import UnitOfTemperature, PRECISION_HALVES
+from homeassistant.const import UnitOfTemperature, PRECISION_HALVES, ATTR_TEMPERATURE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -14,6 +15,8 @@ from zeroconf import ServiceBrowser, ServiceStateChange
 import requests
 
 from . import DOMAIN
+
+BATCH_CHANGES_TIMEOUT = 1.5 # seconds
 
 
 async def async_setup_platform(
@@ -68,7 +71,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         climate.HVACMode.FAN_ONLY,
     ]
 
-    _attr_fan_modes = ['Auto', 'Quiet', 'Low', 'Medium', 'High', ]
+    _attr_fan_modes = ['Auto', 'Quiet', 'Low', 'Medium', 'High']
 
     _attr_swing_modes = [climate.SWING_OFF,
                          climate.SWING_VERTICAL,
@@ -79,15 +82,16 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
     def __init__(self, name, ip, port):
         super().__init__()  # may or may not be necessary for ClimateEntity?
         self._last_status = None
-        self._last_status_datetime = None
+        self._last_status_time = None
         self._attr_name = name
         self._attr_ip = ip
         self._attr_port = port
+        self._queued_settings = {}
 
     @property
     def current_temperature(self):
         return self._last_status['room_temperature_c']
-    
+
     @property
     def fan_mode(self):
         return self._last_status['fan_speed']
@@ -96,7 +100,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
     def hvac_mode(self):
         if not self._last_status['poweron']:
             return climate.HVACMode.OFF
-        
+
         mstr = self._last_status['mode']
         if mstr == 'Heat':
             return climate.HVACMode.HEAT
@@ -105,7 +109,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         elif mstr == 'Dry':
             return climate.HVACMode.DRY
         elif mstr == 'Fan':
-            return climate.HVACMode.FAN
+            return climate.HVACMode.FAN_ONLY
         elif mstr == 'Auto':
             return climate.HVACMode.AUTO
         else:
@@ -129,32 +133,113 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
     def target_temperature(self):
         return self._last_status['desired_temperature_c']
 
-
-    async def async_update(self):
-        async with self.hass.data[DOMAIN]['aiohttp_session'] as session:
-            async with session.get(f"http://{self._attr_ip}:{self._attr_port}/status.json") as resp:
-                t = datetime.datetime.strptime(resp.headers['Date'],'%a, %d %b %Y %H:%M:%S GMT')
-                if resp.ok:
-                    self._last_status = await resp.json()
-                    self._last_status_datetime = t
-                else:
-                    _LOGGER.warning(f"Failed to get update for heat pump "
-                                    f"{self._attr_name} due to "
-                                    f"{resp.status_code}: {resp.reason} "
-                                    f"at time {t}")
-
     async def async_set_hvac_mode(self, hvac_mode):
         """Set new target hvac mode."""
-        raise NotImplementedError()
+        if hvac_mode == climate.HVACMode.OFF:
+            self._queued_settings['poweron'] = False
+        elif hvac_mode == climate.HVACMode.HEAT:
+            self._queued_settings['poweron'] = True
+            self._queued_settings['mode'] = 'Heat'
+        elif hvac_mode == climate.HVACMode.COOL:
+            self._queued_settings['poweron'] = True
+            self._queued_settings['mode'] = 'Cool'
+        elif hvac_mode == climate.HVACMode.DRY:
+            self._queued_settings['poweron'] = True
+            self._queued_settings['mode'] = 'Dry'
+        elif hvac_mode == climate.HVACMode.FAN_ONLY:
+            self._queued_settings['poweron'] = True
+            self._queued_settings['mode'] = 'Fan'
+        elif hvac_mode == climate.HVACMode.AUTO:
+            self._queued_settings['poweron'] = True
+            self._queued_settings['mode'] = 'Auto'
+        else:
+            raise ValueError(f"unrecognized hvac_mode {hvac_mode}")
+
+        await self.send_changes(BATCH_CHANGES_TIMEOUT)
 
     async def async_set_fan_mode(self, fan_mode):
         """Set new target fan mode."""
-        raise NotImplementedError()
+        if fan_mode == 'Auto':
+            self._queued_settings['fan_speed'] = 'Auto'
+        elif fan_mode == 'Quiet':
+            self._queued_settings['fan_speed'] = 'Quiet'
+        elif fan_mode == 'Low':
+            self._queued_settings['fan_speed'] = 'Low'
+        elif fan_mode == 'Medium':
+            self._queued_settings['fan_speed'] = 'Med'
+        elif fan_mode == 'High':
+            self._queued_settings['fan_speed'] = 'High'
+        elif fan_mode == 'Powerful':
+            self._queued_settings['fan_speed'] = 'VeryHigh'
+        else:
+            raise ValueError(f"unrecognized fan_mode {fan_mode}")
+
+        await self.send_changes(BATCH_CHANGES_TIMEOUT)
 
     async def async_set_swing_mode(self, swing_mode):
         """Set new target swing operation."""
-        raise NotImplementedError()
+        if swing_mode == climate.SWING_OFF:
+            self._queued_settings['vane'] = 'Auto'
+            self._queued_settings['widevane'] = 'Mid'
+        elif swing_mode == climate.SWING_VERTICAL:
+            self._queued_settings['vane'] = 'Swing'
+            if self._last_status['widevane'] == 'Swing':
+                self._queued_settings['widevane'] = 'Mid'
+        elif swing_mode == climate.SWING_HORIZONTAL:
+            self._queued_settings['widevane'] = 'Swing'
+            if self._last_status['vane'] == 'Swing':
+                self._queued_settings['vane'] = 'Auto'
+        elif swing_mode == climate.SWING_BOTH:
+            self._queued_settings['vane'] = 'Swing'
+            self._queued_settings['widevane'] = 'Swing'
+        else:
+            raise ValueError(f"unrecognized swing_mode {swing_mode}")
+
+        await self.send_changes(BATCH_CHANGES_TIMEOUT)
+
+        # prevents some possible strangeness with fast updates given we check the state above
+        self.schedule_update_ha_state(True)
 
     async def async_set_temperature(self, **kwargs):
         """Set new target temperature."""
-        raise NotImplementedError()
+        temp = kwargs.get(ATTR_TEMPERATURE)
+
+        self._queued_settings['desired_temperature_c'] = 'Auto'
+
+        await self.send_changes(BATCH_CHANGES_TIMEOUT)
+
+
+    async def async_update(self):
+        _LOGGER.info("running update on mhc")
+
+        url = f"http://{self._attr_ip}:{self._attr_port}/status.json"
+        async with self.hass.data[DOMAIN]['aiohttp_session'].get(url) as resp:
+            if resp.ok:
+                self._last_status = await resp.json()
+                self._last_status_time = time.time()
+            else:
+                _LOGGER.warning(f"Failed to get update for heat pump "
+                                f"{self._attr_name} due to "
+                                f"{resp.status_code}: {resp.reason}")
+
+    async def send_changes(self, schedule_timeout=None):
+        if schedule_timeout is not None:
+            await asyncio.sleep(schedule_timeout)
+
+        if not self._queued_settings:
+            _LOGGER.info("no changes remaining to be sent on mhc")
+            return
+
+        _LOGGER.info("sending a changeset on mhc")
+
+        data_to_send = {k:None for k in ['poweron', 'mode', 'desired_temperature_c', 'fan_speed', 'vane', 'widevane']}
+        data_to_send.update(self._queued_settings)
+
+        url = f"http://{self._attr_ip}:{self._attr_port}/set.json"
+        async with self.hass.data[DOMAIN]['aiohttp_session'].post(url, json=data_to_send) as resp:
+            if resp.ok:
+                # all is fine, don't really care about the return json as long as all is OK
+                self._queued_settings.clear()
+            else:
+                _LOGGER.warning(f"Failed to send changeset {data_to_send} to heat pump "
+                                f"{self._attr_name} due to {resp.status_code}: {resp.reason}")

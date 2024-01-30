@@ -741,7 +741,21 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
     server.fn_handler("/status.json", http::Method::Get, move |req| {
         let stateg = inner_state1.lock().unwrap();
         let resp = if stateg.connected {
-            serde_json::to_value(&stateg as &HeatPumpStatus).unwrap()
+            let statusjson = serde_json::to_value(&stateg as &HeatPumpStatus).unwrap();
+
+            // add a timestamp
+            let json = match statusjson {
+                serde_json::Value::Object(mut o) => {
+                    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                    let timestamp = format!("{}", secs);
+                    o.insert("unix_time".to_string(), serde_json::Value::String(timestamp));  // Something about this is not right...
+                    serde_json::Value::Object(o)
+                }
+                _ => {
+                    panic!("Got a json that is not a map!  This should be impossible")
+                }
+            };
+            json
         } else {
             let j = json!({
                 "connected": false
