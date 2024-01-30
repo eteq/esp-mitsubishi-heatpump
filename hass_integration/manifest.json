@@ -12,7 +12,7 @@
   "iot_class": "local_polling",
   "integration_type": "hub",
   "requirements": [
-    "requests"
+    "aiohttp"
   ],
   "version": "0.1.0"
 }
