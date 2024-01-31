@@ -1,6 +1,7 @@
 import time
 import asyncio
 import logging
+from datetime import timedelta
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ from . import DOMAIN
 
 BATCH_CHANGES_TIMEOUT = 1.5 # seconds
 
+SCAN_INTERVAL = timedelta(seconds=10)
 
 async def async_setup_platform(
     hass: HomeAssistant,
@@ -109,7 +111,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         elif mstr == 'Dry':
             return climate.HVACMode.DRY
         elif mstr == 'Fan':
-            return climate.HVACMode.FAN_ONLY
+            return climate.HVACMode.FAN
         elif mstr == 'Auto':
             return climate.HVACMode.AUTO
         else:
@@ -204,7 +206,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         """Set new target temperature."""
         temp = kwargs.get(ATTR_TEMPERATURE)
 
-        self._queued_settings['desired_temperature_c'] = 'Auto'
+        self._queued_settings['desired_temperature_c'] = float(temp)
 
         await self.send_changes(BATCH_CHANGES_TIMEOUT)
 
@@ -218,9 +220,11 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
                 self._last_status = await resp.json()
                 self._last_status_time = time.time()
             else:
+                text = await resp.text()
                 _LOGGER.warning(f"Failed to get update for heat pump "
                                 f"{self._attr_name} due to "
-                                f"{resp.status_code}: {resp.reason}")
+                                f"{resp.status}: {resp.reason}. "
+                                f"Content: {text}")
 
     async def send_changes(self, schedule_timeout=None):
         if schedule_timeout is not None:
@@ -241,5 +245,8 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
                 # all is fine, don't really care about the return json as long as all is OK
                 self._queued_settings.clear()
             else:
+                text = await resp.text()
                 _LOGGER.warning(f"Failed to send changeset {data_to_send} to heat pump "
-                                f"{self._attr_name} due to {resp.status_code}: {resp.reason}")
+                                f"{self._attr_name} due to "
+                                f"{resp.status}: {resp.reason}. "
+                                f"Content: {text}")
