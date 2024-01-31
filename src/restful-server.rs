@@ -323,7 +323,7 @@ enum WideVaneDirection {
     FarRight=5,
     Split=8,
     Swing=0x0c,
-    ISee=0x80,
+    // ISee=0x80, //not really clear what's going on here, for now we just ignore this bit
 }
 
 #[derive(Clone, Copy, FromRepr, Debug, Serialize, Deserialize)]
@@ -576,7 +576,8 @@ fn status_to_state(packet: &Packet, stateref: &Arc<Mutex<HeatPumpStatus>>) -> an
 
             state.fan_speed = FanSpeed::from_repr(packet.data[6] as usize).unwrap();
             state.vane = VaneDirection::from_repr(packet.data[7] as usize).unwrap();
-            state.widevane = WideVaneDirection::from_repr(packet.data[10] as usize).unwrap();
+            let wvmod = packet.data[10] & (!0x80); // not sure what this bit is for.  TODO: figure out
+            state.widevane = WideVaneDirection::from_repr(wvmod as usize).unwrap();
         }
         Some(StatusPacketType::RoomTemperature) => {
             if packet.data[6] != 0 {
