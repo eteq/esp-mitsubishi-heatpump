@@ -1,3 +1,4 @@
+import re
 import time
 import asyncio
 import logging
@@ -83,12 +84,20 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
 
     def __init__(self, name, ip, port):
         super().__init__()  # may or may not be necessary for ClimateEntity?
+
         self._last_status = None
         self._last_status_time = None
         self._attr_name = name
         self._attr_ip = ip
         self._attr_port = port
         self._queued_settings = {}
+
+        macmatch = re.match(r'.*mac ([a-z0-9]*).*', name)
+        if macmatch:
+            self._attr_unique_id = 'eteq_mheatpump_' + macmatch.group(1)
+        else:
+            _LOGGER.warning(f'could not find the mac of heat pump "{name}", not setting unique id')
+
 
     @property
     def current_temperature(self):
@@ -212,8 +221,6 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
 
 
     async def async_update(self):
-        _LOGGER.info("running update on mhc")
-
         url = f"http://{self._attr_ip}:{self._attr_port}/status.json"
         async with self.hass.data[DOMAIN]['aiohttp_session'].get(url) as resp:
             if resp.ok:
