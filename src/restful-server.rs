@@ -54,7 +54,10 @@ const HTTP_SERVER_STACK_SIZE: usize = 10240;
 // maximum payload for post requests
 const HTTP_SERVER_MAX_LEN: usize = 512;
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
+
 const HTTP_PORT: u16 = 8923;
+const LED_BRIGHTNESS: u8 = 20;
 
 
 macro_rules! pin_from_envar {
@@ -348,7 +351,7 @@ fn main() -> anyhow::Result<()> {
     let mut npx = Ws2812B::new(rmt::TxRmtDriver::new(peripherals.rmt.channel0, pin_from_envar!(pins, "LED_PIN_NUM"), &rmtconfig)?);
     // red during setup
     #[cfg(feature="ws2182onboard")]
-    npx.set(Rgb::new(20, 0, 0))?;
+    npx.set(Rgb::new(LED_BRIGHTNESS, 0, 0))?;
 
     // start by setting up uart
     let uart_config = uart::config::Config::default()
@@ -368,13 +371,23 @@ fn main() -> anyhow::Result<()> {
     ).unwrap();
 
     #[cfg(feature="ws2182onboard")]
-    npx.set(Rgb::new(20, 5, 0))?;
+    npx.set(Rgb::new(LED_BRIGHTNESS, LED_BRIGHTNESS/4, 0))?;
 
     // start up the wifi then try to configure the server
-    let (_wifi, wifimac) = setup_wifi(peripherals.modem)?;
+    let (_wifi, wifimac) = match setup_wifi(peripherals.modem) {
+        Ok(res) => { res },
+        Err(e) => { 
+            #[cfg(feature="ws2182onboard")]
+            npx.set(Rgb::new(LED_BRIGHTNESS, 0, 0))?;
+            info!("wifi did not successfully start. Erroring!");
+            return Err(e);
+        }
+    };
+
+    //let (_wifi, wifimac) = setup_wifi(peripherals.modem)?;
 
     #[cfg(feature="ws2182onboard")]
-    npx.set(Rgb::new(20, 20, 0))?;
+    npx.set(Rgb::new(LED_BRIGHTNESS, LED_BRIGHTNESS, 0))?;
 
     let server_configuration = http::server::Configuration {
         stack_size: HTTP_SERVER_STACK_SIZE,
@@ -424,10 +437,10 @@ fn main() -> anyhow::Result<()> {
         #[cfg(feature="ws2182onboard")]
         if connected {
             // green for connected
-            npx.set(Rgb::new(0, 20, 0))?;
+            npx.set(Rgb::new(0, LED_BRIGHTNESS, 0))?;
         } else {
             // magenta for disconnected
-            npx.set(Rgb::new(20, 0, 20))?;
+            npx.set(Rgb::new(LED_BRIGHTNESS, 0, LED_BRIGHTNESS))?;
         }
         
 
@@ -678,7 +691,7 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<(BlockingWifi<Esp
         info!("found ssid {}, connecting", SSID);
         wifi.connect()?;
     } else if WIFI_HALT_ON_NOT_FOUND == "yes" {
-        info!("Did not find ssid in list {:?}. Halting!", scan_results);
+        info!("Did not find ssid {:?} in list {:?}. Halting!", SSID, scan_results);
         loop {
             compiler_fence(Ordering::SeqCst);
         }
@@ -702,7 +715,10 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<(BlockingWifi<Esp
         wifi.start()?;
     }
 
-    wifi.wait_netif_up()?;
+    //wifi.wait_netif_up()?;
+    // the below is exactly what the above does as of this writing, but allows for a custom timeout
+    // wich is necessary for some esp32c6 chips on at least some networks.
+    wifi.ip_wait_while(|| wifi.wifi().is_up().map(|s| !s), Some(CONNECT_TIMEOUT))?;
 
     let maco = match wifi.get_configuration()? {
         eswifi::Configuration::Client(c) => {
