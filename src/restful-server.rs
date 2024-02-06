@@ -17,6 +17,7 @@ use hal::gpio::AnyIOPin;
 use hal::uart;
 use hal::rmt;
 use hal::sys::EspError;
+use hal::reset;
     
 use embedded_svc::wifi as eswifi;
 use embedded_svc::http::Headers;
@@ -55,6 +56,7 @@ const HTTP_SERVER_STACK_SIZE: usize = 10240;
 const HTTP_SERVER_MAX_LEN: usize = 512;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
+const WIFI_DISCONNECTED_RESET_TIMEOUT: Duration = Duration::from_secs(300);
 
 const HTTP_PORT: u16 = 8923;
 const LED_BRIGHTNESS: u8 = 20;
@@ -374,7 +376,7 @@ fn main() -> anyhow::Result<()> {
     npx.set(Rgb::new(LED_BRIGHTNESS, LED_BRIGHTNESS/4, 0))?;
 
     // start up the wifi then try to configure the server
-    let (_wifi, wifimac) = match setup_wifi(peripherals.modem) {
+    let (wifi, wifimac) = match setup_wifi(peripherals.modem) {
         Ok(res) => { res },
         Err(e) => { 
             #[cfg(feature="ws2182onboard")]
@@ -423,6 +425,7 @@ fn main() -> anyhow::Result<()> {
     info!("Setup complete!");
 
     let mut last_status_request = Instant::now() - RESPONSE_DELAY;
+    let mut wifi_disconnected_since : Option<Instant> = None;
 
     // serve and loop forever...
     loop {
@@ -433,14 +436,37 @@ fn main() -> anyhow::Result<()> {
             (realstate.connected, realstate.desired_settings.is_some())
          };  
 
+         let wifi_connected = wifi.is_connected()? ;
         // update the LED state at the start of the loop based on connected status
         #[cfg(feature="ws2182onboard")]
-        if connected {
-            // green for connected
-            npx.set(Rgb::new(0, LED_BRIGHTNESS, 0))?;
+        if wifi_connected {
+            if connected {
+                // green for connected
+                npx.set(Rgb::new(0, LED_BRIGHTNESS, 0))?;
+            } else {
+                // magenta for disconnected
+                npx.set(Rgb::new(LED_BRIGHTNESS, 0, LED_BRIGHTNESS))?;
+            }
         } else {
-            // magenta for disconnected
-            npx.set(Rgb::new(LED_BRIGHTNESS, 0, LED_BRIGHTNESS))?;
+            // red for wifi disconnected
+            npx.set(Rgb::new(LED_BRIGHTNESS, 0, 0))?;
+
+        }
+
+        // check whether we need to reset because of a disconnected wifi for too long
+        if wifi_connected {
+            wifi_disconnected_since = None 
+        } else {
+            match wifi_disconnected_since {
+                None => {
+                    wifi_disconnected_since = Some(Instant::now())
+                }
+                Some(dur) => {
+                    if dur.elapsed() > WIFI_DISCONNECTED_RESET_TIMEOUT {
+                        reset::restart();
+                    }
+                }
+            }
         }
         
 
@@ -547,7 +573,6 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-
         // check to see if we need to delay because the loop was too fast
         let loopelapsed = loopstart.elapsed();
         if loopelapsed < LOOP_MIN_LENGTH {
@@ -557,7 +582,6 @@ fn main() -> anyhow::Result<()> {
 
             std::thread::sleep(sleepdur);
         }
-        
     }
 }
 
