@@ -1,7 +1,6 @@
 #![feature(const_trait_impl)]
 
 use std::collections::HashMap;
-use std::sync::atomic::{compiler_fence, Ordering};
 use strum::IntoEnumIterator;
 use strum_macros::{FromRepr, EnumIter};
 use log::info;
@@ -40,7 +39,7 @@ use serde_json::json;
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
 const WIFI_CHANNEL: &str = env!("WIFI_CHANNEL");
-const WIFI_HALT_ON_NOT_FOUND: &str = env!("WIFI_HALT_ON_NOT_FOUND");
+const RESET_ON_SSID_NOT_FOUND: &str = env!("RESET_ON_SSID_NOT_FOUND");
 
 static INDEX_HTML: &str = include_str!("restful-server-index.html");
 
@@ -56,7 +55,7 @@ const HTTP_SERVER_STACK_SIZE: usize = 10240;
 const HTTP_SERVER_MAX_LEN: usize = 512;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
-const WIFI_DISCONNECTED_RESET_TIMEOUT: Duration = Duration::from_secs(300);
+const WIFI_DISCONNECTED_RESET_TIME: Duration = Duration::from_secs(30);
 
 const HTTP_PORT: u16 = 8923;
 const LED_BRIGHTNESS: u8 = 20;
@@ -69,6 +68,15 @@ macro_rules! pin_from_envar {
         }
     };
 }
+
+#[derive(Debug)]
+struct NoSSIDError;
+impl std::fmt::Display for NoSSIDError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SSID Not Found")
+    }
+}
+impl std::error::Error for NoSSIDError {}
 
 #[derive(Debug, Serialize)]
 struct HeatPumpStatus {
@@ -351,9 +359,9 @@ fn main() -> anyhow::Result<()> {
     let rmtconfig = rmt::config::TransmitConfig::new().clock_divider(1);
     #[cfg(feature="ws2182onboard")]
     let mut npx = Ws2812B::new(rmt::TxRmtDriver::new(peripherals.rmt.channel0, pin_from_envar!(pins, "LED_PIN_NUM"), &rmtconfig)?);
-    // red during setup
+    // orangish during setup
     #[cfg(feature="ws2182onboard")]
-    npx.set(Rgb::new(LED_BRIGHTNESS, 0, 0))?;
+    npx.set(Rgb::new(LED_BRIGHTNESS, LED_BRIGHTNESS/4, 0))?;
 
     // start by setting up uart
     let uart_config = uart::config::Config::default()
@@ -372,16 +380,17 @@ fn main() -> anyhow::Result<()> {
         &uart_config
     ).unwrap();
 
-    #[cfg(feature="ws2182onboard")]
-    npx.set(Rgb::new(LED_BRIGHTNESS, LED_BRIGHTNESS/4, 0))?;
 
     // start up the wifi then try to configure the server
     let (wifi, wifimac) = match setup_wifi(peripherals.modem) {
         Ok(res) => { res },
-        Err(e) => { 
+        Err(e) => {
             #[cfg(feature="ws2182onboard")]
             npx.set(Rgb::new(LED_BRIGHTNESS, 0, 0))?;
-            info!("wifi did not successfully start. Erroring!");
+            info!("wifi did not successfully start due to {}. Waiting {} secs and then restarting!", 
+                  e, WIFI_DISCONNECTED_RESET_TIME.as_secs_f32());
+            std::thread::sleep(WIFI_DISCONNECTED_RESET_TIME);
+            reset::restart();
             return Err(e);
         }
     };
@@ -425,7 +434,6 @@ fn main() -> anyhow::Result<()> {
     info!("Setup complete!");
 
     let mut last_status_request = Instant::now() - RESPONSE_DELAY;
-    let mut wifi_disconnected_since : Option<Instant> = None;
 
     // serve and loop forever...
     loop {
@@ -436,37 +444,37 @@ fn main() -> anyhow::Result<()> {
             (realstate.connected, realstate.desired_settings.is_some())
          };  
 
-         let wifi_connected = wifi.is_connected()? ;
         // update the LED state at the start of the loop based on connected status
         #[cfg(feature="ws2182onboard")]
-        if wifi_connected {
-            if connected {
-                // green for connected
-                npx.set(Rgb::new(0, LED_BRIGHTNESS, 0))?;
-            } else {
-                // magenta for disconnected
-                npx.set(Rgb::new(LED_BRIGHTNESS, 0, LED_BRIGHTNESS))?;
-            }
+        if connected {
+            // green for connected
+            npx.set(Rgb::new(0, LED_BRIGHTNESS, 0))?;
         } else {
-            // red for wifi disconnected
-            npx.set(Rgb::new(LED_BRIGHTNESS, 0, 0))?;
-
+            // magenta for disconnected
+            npx.set(Rgb::new(LED_BRIGHTNESS, 0, LED_BRIGHTNESS))?;
         }
 
-        // check whether we need to reset because of a disconnected wifi for too long
-        if wifi_connected {
-            wifi_disconnected_since = None 
-        } else {
-            match wifi_disconnected_since {
-                None => {
-                    wifi_disconnected_since = Some(Instant::now())
-                }
-                Some(dur) => {
-                    if dur.elapsed() > WIFI_DISCONNECTED_RESET_TIMEOUT {
-                        reset::restart();
+        // check whether we need to reset because of a disconnected wifi
+        if ! wifi.is_connected()? {
+            info!("Wifi disconnected! Restarting after pause of {} secs", WIFI_DISCONNECTED_RESET_TIME.as_secs_f32());
+            
+            // this waits until WIFI_DISCONNECTED_RESET_TIME, blinking the red LED every half-second
+            let start_countdown = Instant::now();
+            let mut toggle_time = start_countdown;
+            while start_countdown.elapsed() < WIFI_DISCONNECTED_RESET_TIME {
+                #[cfg(feature="ws2182onboard")]
+                {
+                    if toggle_time.elapsed() < Duration::from_millis(250) {
+                        npx.set(Rgb::new(LED_BRIGHTNESS, 0, 0))?;
+                    } else if toggle_time.elapsed() < Duration::from_millis(500) {
+                        npx.set(Rgb::new(0, 0, 0))?;
+                    } else {
+                        toggle_time = Instant::now();
                     }
                 }
             }
+
+            reset::restart();
         }
         
 
@@ -714,11 +722,9 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<(BlockingWifi<Esp
     if ssid_match {
         info!("found ssid {}, connecting", SSID);
         wifi.connect()?;
-    } else if WIFI_HALT_ON_NOT_FOUND == "yes" {
-        info!("Did not find ssid {:?} in list {:?}. Halting!", SSID, scan_results);
-        loop {
-            compiler_fence(Ordering::SeqCst);
-        }
+    } else if RESET_ON_SSID_NOT_FOUND == "yes" {
+        info!("Did not find ssid {:?} in list {:?}!", SSID, scan_results);
+        return Err(NoSSIDError{}.into());
     } else {
         info!("Did not find ssid in list below, so creating AP w/ ssid: {}", SSID);
         info!("Scan Results: {:?}", scan_results);
