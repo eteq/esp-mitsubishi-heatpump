@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use esp_idf_hal as hal;
 
 use hal::prelude::*;
-use hal::gpio::AnyIOPin;
+use hal::gpio::{AnyIOPin, PinDriver, Pull, InputMode, InputPin};
 use hal::uart;
 use hal::rmt;
 use hal::sys::EspError;
@@ -346,6 +346,18 @@ enum ISeeMode {
     Indirect=1,
 }
 
+fn set_led<T:InputPin, MODE: InputMode>(r:u8, g:u8, b:u8, npx: &mut Ws2812B, 
+                                        led_off_sense_pin: &PinDriver<T, MODE>) -> anyhow::Result<()> {
+    #[cfg(feature="ws2182onboard")]
+    if led_off_sense_pin.is_high() {
+        npx.set(Rgb::new(r, g, b))?;
+    } else {
+        npx.set(Rgb::new(0, 0, 0))?;
+    }
+
+    Ok(())
+}
+
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -354,14 +366,21 @@ fn main() -> anyhow::Result<()> {
 
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
+
+    //LED_OFF_SEND_PIN LED_OFF_SENSE_PIN
+    let mut  led_off_send_pin = PinDriver::output(pin_from_envar!(pins, "LED_OFF_SEND_PIN"))?;
+    let mut  led_off_sense_pin = PinDriver::input(pin_from_envar!(pins, "LED_OFF_SENSE_PIN"))?;
+
+    // pulling down and having the send pin pull high myseteriously wasn't working so we have the sense pin high for leds on
+    led_off_send_pin.set_low()?;
+    led_off_sense_pin.set_pull(Pull::Up)?;
     
     #[cfg(feature="ws2182onboard")]
     let rmtconfig = rmt::config::TransmitConfig::new().clock_divider(1);
     #[cfg(feature="ws2182onboard")]
     let mut npx = Ws2812B::new(rmt::TxRmtDriver::new(peripherals.rmt.channel0, pin_from_envar!(pins, "LED_PIN_NUM"), &rmtconfig)?);
-    // orangish during setup
-    #[cfg(feature="ws2182onboard")]
-    npx.set(Rgb::new(LED_BRIGHTNESS, LED_BRIGHTNESS/4, 0))?;
+    // reddish-orangish during setup
+    set_led(LED_BRIGHTNESS, LED_BRIGHTNESS/4, 0, &mut npx, &led_off_sense_pin)?;
 
     // start by setting up uart
     let uart_config = uart::config::Config::default()
@@ -385,8 +404,7 @@ fn main() -> anyhow::Result<()> {
     let (wifi, wifimac) = match setup_wifi(peripherals.modem) {
         Ok(res) => { res },
         Err(e) => {
-            #[cfg(feature="ws2182onboard")]
-            npx.set(Rgb::new(LED_BRIGHTNESS, 0, 0))?;
+            set_led(LED_BRIGHTNESS, 0, 0, &mut npx, &led_off_sense_pin)?;
             info!("wifi did not successfully start due to {}. Waiting {} secs and then restarting!", 
                   e, WIFI_DISCONNECTED_RESET_TIME.as_secs_f32());
             std::thread::sleep(WIFI_DISCONNECTED_RESET_TIME);
@@ -395,10 +413,8 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    //let (_wifi, wifimac) = setup_wifi(peripherals.modem)?;
-
-    #[cfg(feature="ws2182onboard")]
-    npx.set(Rgb::new(LED_BRIGHTNESS, LED_BRIGHTNESS, 0))?;
+    //Go to yellow once wifi is started
+    set_led(LED_BRIGHTNESS, LED_BRIGHTNESS, 0, &mut npx, &led_off_sense_pin)?;
 
     let server_configuration = http::server::Configuration {
         stack_size: HTTP_SERVER_STACK_SIZE,
@@ -445,13 +461,12 @@ fn main() -> anyhow::Result<()> {
          };  
 
         // update the LED state at the start of the loop based on connected status
-        #[cfg(feature="ws2182onboard")]
         if connected {
             // green for connected
-            npx.set(Rgb::new(0, LED_BRIGHTNESS, 0))?;
+            set_led(0, LED_BRIGHTNESS, 0, &mut npx, &led_off_sense_pin)?;
         } else {
             // magenta for disconnected
-            npx.set(Rgb::new(LED_BRIGHTNESS, 0, LED_BRIGHTNESS))?;
+            set_led(LED_BRIGHTNESS, 0, LED_BRIGHTNESS, &mut npx, &led_off_sense_pin)?;
         }
 
         // check whether we need to reset because of a disconnected wifi
@@ -462,18 +477,14 @@ fn main() -> anyhow::Result<()> {
             let start_countdown = Instant::now();
             let mut toggle_time = start_countdown;
             while start_countdown.elapsed() < WIFI_DISCONNECTED_RESET_TIME {
-                #[cfg(feature="ws2182onboard")]
-                {
-                    if toggle_time.elapsed() < Duration::from_millis(250) {
-                        npx.set(Rgb::new(LED_BRIGHTNESS, 0, 0))?;
-                    } else if toggle_time.elapsed() < Duration::from_millis(500) {
-                        npx.set(Rgb::new(0, 0, 0))?;
-                    } else {
-                        toggle_time = Instant::now();
-                    }
+                if toggle_time.elapsed() < Duration::from_millis(250) {
+                    set_led(LED_BRIGHTNESS, 0, 0, &mut npx, &led_off_sense_pin)?;
+                } else if toggle_time.elapsed() < Duration::from_millis(500) {
+                    set_led(0, 0, 0, &mut npx, &led_off_sense_pin)?;
+                } else {
+                    toggle_time = Instant::now();
                 }
             }
-
             reset::restart();
         }
         

@@ -24,3 +24,5 @@ WIFI_PASS = "defaultpass"
 RESET_ON_SSID_NOT_FOUND = "yes"
 # only used in AP mode
 WIFI_CHANNEL = "11"
+LED_OFF_SEND_PIN = "10"
+LED_OFF_SENSE_PIN = "11"
