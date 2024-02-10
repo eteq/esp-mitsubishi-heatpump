@@ -107,6 +107,19 @@
         </fieldset>
 
 
+        <fieldset>
+            <legend>LED brightness</legend>
+
+            <input type="checkbox" id="ledb-send" name="ledb-send" value="ledb-send"
+                   oninput="document.getElementById(this.id.slice(0, -5)).disabled = !this.checked">
+            <label for="ledb-send"> Send? </label>
+            
+            <input id="ledb" type="range" value="20" min="0" max="255" step=1 oninput="this.nextElementSibling.value = this.value" disabled>
+            <output>20</output>
+
+        </fieldset>
+
+
     <input type="submit" value="Submit">
 
 
@@ -180,6 +193,12 @@
                 json.widevane = form.elements["wvane"].value;
             } else {
                 json.widevane = null;
+            }
+            
+            if (form.elements["ledb-send"].checked) {
+                json.controller_led_brightness = parseInt(form.elements["ledb"].value);
+            } else {
+                json.controller_led_brightness = null;
             }
 
             return json;

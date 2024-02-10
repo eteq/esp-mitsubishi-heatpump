@@ -24,8 +24,8 @@ use embedded_svc::io::{Read, Write};
 
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    nvs::EspDefaultNvsPartition,
     wifi::{BlockingWifi, EspWifi, WifiDeviceId},
+    nvs,
     http,
     mdns,
 };
@@ -58,7 +58,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const WIFI_DISCONNECTED_RESET_TIME: Duration = Duration::from_secs(30);
 
 const HTTP_PORT: u16 = 8923;
-const LED_BRIGHTNESS: u8 = 20;
+const LED_DEFAULT_BRIGHTNESS: u8 = 20;
 
 
 macro_rules! pin_from_envar {
@@ -96,6 +96,7 @@ struct HeatPumpStatus {
     pub error_data: Option<Vec<u8>>,
     pub last_status_packets: HashMap<u8, Vec<u8>>,
     pub desired_settings: Option<HeatPumpSetting>,
+    pub controller_led_brightness: u8,
 }
 impl HeatPumpStatus {
     pub fn new() -> Self{
@@ -115,6 +116,7 @@ impl HeatPumpStatus {
             error_data: None,
             last_status_packets: HashMap::new(),
             desired_settings: None,
+            controller_led_brightness: LED_DEFAULT_BRIGHTNESS,
         }
     }
 }
@@ -128,6 +130,7 @@ struct HeatPumpSetting {
     pub fan_speed: Option<FanSpeed>,
     pub vane: Option<VaneDirection>,
     pub widevane: Option<WideVaneDirection>,
+    pub controller_led_brightness: Option<u8>,
 }
 
 
@@ -142,7 +145,17 @@ impl HeatPumpSetting {
             fan_speed: None,
             vane: None,
             widevane: None,
+            controller_led_brightness: None,
         }
+    }
+    pub fn requires_packet(&self) -> bool {
+        // setting changes on just the controller don't require updating the heat pump itself.  In that case this is false
+        self.poweron.is_some() | 
+        self.mode.is_some() | 
+        self.desired_temperature_c.is_some() | 
+        self.fan_speed.is_some() |
+        self.vane.is_some() |
+        self.widevane.is_some()
     }
 
     pub fn to_packet(&self) -> Packet {
@@ -374,13 +387,18 @@ fn main() -> anyhow::Result<()> {
     // pulling down and having the send pin pull high myseteriously wasn't working so we have the sense pin high for leds on
     led_off_send_pin.set_low()?;
     led_off_sense_pin.set_pull(Pull::Up)?;
+
+    // set up NVS since that is needed to remember led brightness
+    let nvs_default_partition: nvs::EspNvsPartition<nvs::NvsDefault> = nvs::EspDefaultNvsPartition::take()?;
+    let nvs_settings = nvs::EspNvs::new(nvs_default_partition.clone(), "settings", true)?;
+    let mut led_brightness = nvs_settings.get_u8("led_brightness")?.unwrap_or(LED_DEFAULT_BRIGHTNESS); 
     
     #[cfg(feature="ws2182onboard")]
     let rmtconfig = rmt::config::TransmitConfig::new().clock_divider(1);
     #[cfg(feature="ws2182onboard")]
     let mut npx = Ws2812B::new(rmt::TxRmtDriver::new(peripherals.rmt.channel0, pin_from_envar!(pins, "LED_PIN_NUM"), &rmtconfig)?);
     // reddish-orangish during setup
-    set_led(LED_BRIGHTNESS, LED_BRIGHTNESS/4, 0, &mut npx, &led_off_sense_pin)?;
+    set_led(led_brightness, led_brightness/4, 0, &mut npx, &led_off_sense_pin)?;
 
     // start by setting up uart
     let uart_config = uart::config::Config::default()
@@ -401,10 +419,10 @@ fn main() -> anyhow::Result<()> {
 
 
     // start up the wifi then try to configure the server
-    let (wifi, wifimac) = match setup_wifi(peripherals.modem) {
+    let (wifi, wifimac) = match setup_wifi(peripherals.modem, nvs_default_partition.clone()) {
         Ok(res) => { res },
         Err(e) => {
-            set_led(LED_BRIGHTNESS, 0, 0, &mut npx, &led_off_sense_pin)?;
+            set_led(led_brightness, 0, 0, &mut npx, &led_off_sense_pin)?;
             info!("wifi did not successfully start due to {}. Waiting {} secs and then restarting!", 
                   e, WIFI_DISCONNECTED_RESET_TIME.as_secs_f32());
             std::thread::sleep(WIFI_DISCONNECTED_RESET_TIME);
@@ -414,7 +432,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     //Go to yellow once wifi is started
-    set_led(LED_BRIGHTNESS, LED_BRIGHTNESS, 0, &mut npx, &led_off_sense_pin)?;
+    set_led(led_brightness, led_brightness, 0, &mut npx, &led_off_sense_pin)?;
 
     let server_configuration = http::server::Configuration {
         stack_size: HTTP_SERVER_STACK_SIZE,
@@ -455,18 +473,22 @@ fn main() -> anyhow::Result<()> {
     loop {
         let loopstart = Instant::now();
 
+        led_brightness = nvs_settings.get_u8("led_brightness")?.unwrap_or(LED_DEFAULT_BRIGHTNESS);
+
         let (connected, data_to_send) = { 
-            let realstate = state.lock().unwrap();
+            let mut realstate = state.lock().unwrap();
+            realstate.controller_led_brightness = led_brightness;
             (realstate.connected, realstate.desired_settings.is_some())
          };  
+
 
         // update the LED state at the start of the loop based on connected status
         if connected {
             // green for connected
-            set_led(0, LED_BRIGHTNESS, 0, &mut npx, &led_off_sense_pin)?;
+            set_led(0, led_brightness, 0, &mut npx, &led_off_sense_pin)?;
         } else {
             // magenta for disconnected
-            set_led(LED_BRIGHTNESS, 0, LED_BRIGHTNESS, &mut npx, &led_off_sense_pin)?;
+            set_led(led_brightness, 0, led_brightness, &mut npx, &led_off_sense_pin)?;
         }
 
         // check whether we need to reset because of a disconnected wifi
@@ -478,7 +500,7 @@ fn main() -> anyhow::Result<()> {
             let mut toggle_time = start_countdown;
             while start_countdown.elapsed() < WIFI_DISCONNECTED_RESET_TIME {
                 if toggle_time.elapsed() < Duration::from_millis(250) {
-                    set_led(LED_BRIGHTNESS, 0, 0, &mut npx, &led_off_sense_pin)?;
+                    set_led(led_brightness, 0, 0, &mut npx, &led_off_sense_pin)?;
                 } else if toggle_time.elapsed() < Duration::from_millis(500) {
                     set_led(0, 0, 0, &mut npx, &led_off_sense_pin)?;
                 } else {
@@ -495,32 +517,44 @@ fn main() -> anyhow::Result<()> {
             if data_to_send {
                 let mut realstate = state.lock().unwrap();
 
-                let packet_to_send = realstate.desired_settings.as_ref().unwrap().to_packet();
-                info!("Writing to heat pump: {:?}", packet_to_send.to_bytes());
-                uart.write(&packet_to_send.to_bytes())?;
-                realstate.desired_settings = None;
+                let desired_settings = realstate.desired_settings.as_ref().unwrap();
+                if desired_settings.requires_packet() {
+                    let packet_to_send = desired_settings.to_packet();
 
-                // now check that we got a packet back
-                let wait_start = Instant::now();
-                while wait_start.elapsed() < RESPONSE_DELAY {
-                    if uart.remaining_read()? > 0 {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                match read_packet(&uart)? {
-                    Some(p) => { 
-                        if p.packet_type == 0x61 {
-                            info!("Got expected response to setting change request: {:?}", p);
-                        } else {
-                            panic!("Got unexpected packet type in response to setting change request: {:?}", p);
+                    info!("Writing to heat pump: {:?}", packet_to_send.to_bytes());
+                    uart.write(&packet_to_send.to_bytes())?;
+                    realstate.desired_settings = None;
+
+                    // now check that we got a packet back
+                    let wait_start = Instant::now();
+                    while wait_start.elapsed() < RESPONSE_DELAY {
+                        if uart.remaining_read()? > 0 {
+                            break;
                         }
+                        std::thread::sleep(Duration::from_millis(5));
                     }
-                    None => {
-                        info!("No response to setting change request, assuming disconnected");
-                        state.lock().unwrap().connected = false;
-                    }
-                };
+                    match read_packet(&uart)? {
+                        Some(p) => { 
+                            if p.packet_type == 0x61 {
+                                info!("Got expected response to setting change request: {:?}", p);
+                            } else {
+                                panic!("Got unexpected packet type in response to setting change request: {:?}", p);
+                            }
+                        }
+                        None => {
+                            info!("No response to setting change request, assuming disconnected");
+                            realstate.connected = false;
+                        }
+                    };
+                }
+
+                // we put the non-heat pump settings *here* so that if the above fails they don't happen
+
+                // re-leting desired_settings here lets the compiler drop it above to allow for mutable access to realstate
+                let desired_settings = realstate.desired_settings.as_ref().unwrap();
+                if desired_settings.controller_led_brightness.is_some() {
+                    nvs_settings.set_u8("led_brightness", desired_settings.controller_led_brightness.unwrap())?;
+                }
 
             } else if last_status_request.elapsed() > RESPONSE_DELAY {
                 info!("Requesting status");
@@ -698,12 +732,11 @@ fn read_packet(uart: &uart::UartDriver) -> anyhow::Result<Option<Packet>> {
     }
 }
 
-fn setup_wifi<'a>(pmodem: hal::modem::Modem) -> anyhow::Result<(BlockingWifi<EspWifi<'a>>, Option<[u8; 6]>)> {
+fn setup_wifi<'a>(pmodem: hal::modem::Modem, dnvs: nvs::EspDefaultNvsPartition) -> anyhow::Result<(BlockingWifi<EspWifi<'a>>, Option<[u8; 6]>)> {
     let sys_loop = EspSystemEventLoop::take()?;
-    let nvs = EspDefaultNvsPartition::take()?;
 
     let mut wifi = BlockingWifi::wrap(
-        EspWifi::new(pmodem, sys_loop.clone(), Some(nvs))?,
+        EspWifi::new(pmodem, sys_loop.clone(), Some(dnvs))?,
         sys_loop,
     )?;
 
