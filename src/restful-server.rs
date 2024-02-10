@@ -548,14 +548,6 @@ fn main() -> anyhow::Result<()> {
                     };
                 }
 
-                // we put the non-heat pump settings *here* so that if the above fails they don't happen
-
-                // re-leting desired_settings here lets the compiler drop it above to allow for mutable access to realstate
-                let desired_settings = realstate.desired_settings.as_ref().unwrap();
-                if desired_settings.controller_led_brightness.is_some() {
-                    nvs_settings.set_u8("led_brightness", desired_settings.controller_led_brightness.unwrap())?;
-                }
-
             } else if last_status_request.elapsed() > RESPONSE_DELAY {
                 info!("Requesting status");
                 // First make sure there's no junk left unread in the uart
@@ -596,9 +588,6 @@ fn main() -> anyhow::Result<()> {
                     info!("Done requesting status, have {} ms reminaing before next request", RESPONSE_DELAY.as_millis());     
                 }
             } 
-            // else{
-            //     info!("Not requesting status, have {} ms reminaing before next request", (RESPONSE_DELAY - last_status_request.elapsed()).as_millis());  
-            // }
 
 
         } else {
@@ -626,12 +615,21 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+
+        // we put the non-heat pump settings (which don't care about connection status) at the end so that if the above fails they don't happen
+        if data_to_send {
+            let realstate = state.lock().unwrap();
+            let desired_settings = realstate.desired_settings.as_ref().unwrap();
+            if desired_settings.controller_led_brightness.is_some() {
+                nvs_settings.set_u8("led_brightness", desired_settings.controller_led_brightness.unwrap())?;
+                info!("setting LED brightness to {:?}", desired_settings.controller_led_brightness.unwrap());
+            }
+        }
+
         // check to see if we need to delay because the loop was too fast
         let loopelapsed = loopstart.elapsed();
         if loopelapsed < LOOP_MIN_LENGTH {
             let sleepdur = LOOP_MIN_LENGTH - loopelapsed;
-
-            //info!("loop too short, sleeping for {sleepdur:?}");
 
             std::thread::sleep(sleepdur);
         }
