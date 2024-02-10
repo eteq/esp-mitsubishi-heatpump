@@ -847,7 +847,8 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
             json
         } else {
             let j = json!({
-                "connected": false
+                "connected": false,
+                "controller_led_brightness": stateg.controller_led_brightness
             });
             j
         };
