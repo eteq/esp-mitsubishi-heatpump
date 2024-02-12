@@ -350,11 +350,12 @@ enum WideVaneDirection {
     Split=8,
     Swing=0x0c,
     // ISee=0x80, //not really clear what's going on here, for now we just ignore this bit
+    Unknown=999,
 }
 
 #[derive(Clone, Copy, FromRepr, Debug, Serialize, Deserialize)]
 enum ISeeMode {
-    Unknown=254,
+    Unknown=999,
     Direct=2,
     Indirect=1,
 }
@@ -617,12 +618,15 @@ fn main() -> anyhow::Result<()> {
 
 
         // we put the non-heat pump settings (which don't care about connection status) at the end so that if the above fails they don't happen
-        if data_to_send {
+        // we also put in its own block so that its locks are self-contained
+        {
             let realstate = state.lock().unwrap();
-            let desired_settings = realstate.desired_settings.as_ref().unwrap();
-            if desired_settings.controller_led_brightness.is_some() {
-                nvs_settings.set_u8("led_brightness", desired_settings.controller_led_brightness.unwrap())?;
-                info!("setting LED brightness to {:?}", desired_settings.controller_led_brightness.unwrap());
+            if realstate.desired_settings.is_some() {
+                let desired_settings = realstate.desired_settings.as_ref().unwrap();
+                if desired_settings.controller_led_brightness.is_some() {
+                    nvs_settings.set_u8("led_brightness", desired_settings.controller_led_brightness.unwrap())?;
+                    info!("setting LED brightness to {:?}", desired_settings.controller_led_brightness.unwrap());
+                }
             }
         }
 
@@ -665,7 +669,9 @@ fn status_to_state(packet: &Packet, stateref: &Arc<Mutex<HeatPumpStatus>>) -> an
             state.fan_speed = FanSpeed::from_repr(packet.data[6] as usize).unwrap();
             state.vane = VaneDirection::from_repr(packet.data[7] as usize).unwrap();
             let wvmod = packet.data[10] & (!0x80); // not sure what this bit is for.  TODO: figure out
-            state.widevane = WideVaneDirection::from_repr(wvmod as usize).unwrap();
+            
+            state.widevane = WideVaneDirection::from_repr(wvmod as usize).unwrap_or(WideVaneDirection::Unknown);
+            
         }
         Some(StatusPacketType::RoomTemperature) => {
             if packet.data[6] != 0 {
@@ -682,7 +688,8 @@ fn status_to_state(packet: &Packet, stateref: &Arc<Mutex<HeatPumpStatus>>) -> an
             }
 
             // byte 8 seems to have isee info direct/indirect for some reason
-            state.isee_mode = ISeeMode::from_repr(packet.data[8] as usize).unwrap();
+            state.isee_mode = ISeeMode::from_repr(packet.data[8] as usize).unwrap_or(ISeeMode::Unknown);
+            
         }
         Some(StatusPacketType::ErrorCodeMaybe) => {
             if packet.data[4] == 0x80 {
