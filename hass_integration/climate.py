@@ -98,6 +98,9 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         else:
             _LOGGER.warning(f'could not find the mac of heat pump "{name}", not setting unique id')
 
+    @property
+    def last_status(self):
+        return self._last_status
 
     @property
     def current_temperature(self):
@@ -120,7 +123,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         elif mstr == 'Dry':
             return climate.HVACMode.DRY
         elif mstr == 'Fan':
-            return climate.HVACMode.FAN
+            return climate.HVACMode.FAN_ONLY
         elif mstr == 'Auto':
             return climate.HVACMode.AUTO
         else:
