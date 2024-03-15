@@ -1,59 +1,36 @@
 import re
 import time
 import asyncio
+import aiohttp
 import logging
 from collections import defaultdict
 from datetime import timedelta
 
 _LOGGER = logging.getLogger(__name__)
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature, PRECISION_HALVES, ATTR_TEMPERATURE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.components import climate, zeroconf
-
-from zeroconf import ServiceBrowser, ServiceStateChange
-
-import requests
+from homeassistant.components import climate
+from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, CONF_MAC
 
 from . import DOMAIN
 
-BATCH_CHANGES_TIMEOUT = 1.5 # seconds
 
 SCAN_INTERVAL = timedelta(seconds=10)
+CONTROLLER_SEND_WAIT_TIME_SECS = 0.02 # 20ms should be enough?
 
-async def async_setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
+    config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None
 ) -> None:
-    """Set up the sensor platform."""
-    # We only want this platform to be set up via discovery.
-    if discovery_info is None:
-        return
-
-    def on_service_state_change(zeroconf, service_type, name, state_change):
-        if state_change == ServiceStateChange.Added:
-
-            info = zeroconf.get_service_info(service_type, name)
-            addrs = info.parsed_scoped_addresses()
-
-            _LOGGER.info(f"Adding eteq-mheatpump: {name}")
-
-            async_add_entities([MitsubishiHeatpumpController(ip=addrs[0], port=info.port, name=name)], update_before_add=True)
-
-        elif state_change == ServiceStateChange.Removed:
-            _LOGGER.warning(f"eteq-mheatpump name: {name} removed.  Can't remove from hass.")
-        elif state_change == ServiceStateChange.Updated:
-            _LOGGER.warning(f"eteq-mheatpump name: {name} updated.  Not sure what to do.")
-        else:
-            _LOGGER.warning(f"eteq-mheatpump service state change unrecognized: {state_change}")
-
-    zc = await zeroconf.async_get_instance(hass)
-    browser = ServiceBrowser(zc, ['_eteq-mheatpump._tcp.local.'],
-                             handlers=[on_service_state_change])
+    """Set up the Mitsubishi Heat Pump climate platform."""
+    async_add_entities([MitsubishiHeatpumpController(name=config_entry.data[CONF_NAME],
+                                                     ip=config_entry.data[CONF_HOST],
+                                                     port=config_entry.data[CONF_PORT],
+                                                     mac=config_entry.data[CONF_MAC])])
 
 
 class MitsubishiHeatpumpController(climate.ClimateEntity):
@@ -83,21 +60,17 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
                          climate.SWING_BOTH
                         ]
 
-    def __init__(self, name, ip, port):
+    def __init__(self, name, ip, port, mac):
         super().__init__()  # may or may not be necessary for ClimateEntity?
 
+        self._attr_unique_id = mac
         self._last_status = defaultdict(lambda:None)
         self._last_status_time = None
         self._attr_name = name
         self._attr_ip = ip
         self._attr_port = port
         self._queued_settings = {}
-
-        macmatch = re.match(r'.*mac ([a-z0-9]*).*', name)
-        if macmatch:
-            self._attr_unique_id = 'eteq_mheatpump_' + macmatch.group(1)
-        else:
-            _LOGGER.warning(f'could not find the mac of heat pump "{name}", not setting unique id')
+        self._attr_available = True
 
     @property
     def last_status(self):
@@ -170,7 +143,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         else:
             raise ValueError(f"unrecognized hvac_mode {hvac_mode}")
 
-        await self.send_changes(BATCH_CHANGES_TIMEOUT)
+        self.set_changes_pending()
 
     async def async_set_fan_mode(self, fan_mode):
         """Set new target fan mode."""
@@ -189,7 +162,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         else:
             raise ValueError(f"unrecognized fan_mode {fan_mode}")
 
-        await self.send_changes(BATCH_CHANGES_TIMEOUT)
+        self.set_changes_pending()
 
     async def async_set_swing_mode(self, swing_mode):
         """Set new target swing operation."""
@@ -210,10 +183,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         else:
             raise ValueError(f"unrecognized swing_mode {swing_mode}")
 
-        await self.send_changes(BATCH_CHANGES_TIMEOUT)
-
-        # prevents some possible strangeness with fast updates given we check the state above
-        self.schedule_update_ha_state(True)
+        self.set_changes_pending()
 
     async def async_set_temperature(self, **kwargs):
         """Set new target temperature."""
@@ -221,28 +191,36 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
 
         self._queued_settings['desired_temperature_c'] = float(temp)
 
-        await self.send_changes(BATCH_CHANGES_TIMEOUT)
+        self.set_changes_pending()
 
 
     async def async_update(self):
+        if self._queued_settings:
+            self.send_changes()
+            asyncio.sleep(CONTROLLER_SEND_WAIT_TIME_SECS)
+        
         url = f"http://{self._attr_ip}:{self._attr_port}/status.json"
-        async with self.hass.data[DOMAIN]['aiohttp_session'].get(url) as resp:
-            if resp.ok:
-                self._last_status = await resp.json()
-                self._last_status_time = time.time()
-            else:
-                text = await resp.text()
-                _LOGGER.warning(f"Failed to get update for heat pump "
-                                f"{self._attr_name} due to "
-                                f"{resp.status}: {resp.reason}. "
-                                f"Content: {text}")
 
-    async def send_changes(self, schedule_timeout=None):
-        if schedule_timeout is not None:
-            await asyncio.sleep(schedule_timeout)
+        try:
+            async with self.hass.data[DOMAIN]['aiohttp_session'].get(url) as resp:
+                if resp.ok:
+                    self._last_status = await resp.json()
+                    self._last_status_time = time.time()
+                    self._attr_available = True
+                else:
+                    text = await resp.text()
+                    _LOGGER.warning(f"Failed to get update for heat pump "
+                                    f"{self._attr_name} due to "
+                                    f"{resp.status}: {resp.reason}. "
+                                    f"Content: {text}")
+                    self._attr_available = False
+        except aiohttp.ClientError as e:
+            _LOGGER.warning(f"Failed to get update for heat pump {self._attr_name} due to {e}")
+            self._attr_available = False
 
+    async def send_changes(self):
         if not self._queued_settings:
-            _LOGGER.info("no changes remaining to be sent on mhc")
+            _LOGGER.info("no changes remaining to be sent on mhc, but request was made... ignoring.")
             return
 
         _LOGGER.info("sending a changeset on mhc")
@@ -251,13 +229,21 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         data_to_send.update(self._queued_settings)
 
         url = f"http://{self._attr_ip}:{self._attr_port}/set.json"
-        async with self.hass.data[DOMAIN]['aiohttp_session'].post(url, json=data_to_send) as resp:
-            if resp.ok:
-                # all is fine, don't really care about the return json as long as all is OK
-                self._queued_settings.clear()
-            else:
-                text = await resp.text()
-                _LOGGER.warning(f"Failed to send changeset {data_to_send} to heat pump "
-                                f"{self._attr_name} due to "
-                                f"{resp.status}: {resp.reason}. "
-                                f"Content: {text}")
+        try:
+            async with self.hass.data[DOMAIN]['aiohttp_session'].post(url, json=data_to_send) as resp:
+                if resp.ok:
+                    # all is fine, don't really care about the return json as long as all is OK
+                    self._queued_settings.clear()
+                else:
+                    text = await resp.text()
+                    _LOGGER.warning(f"Failed to send changeset {data_to_send} to heat pump "
+                                    f"{self._attr_name} due to "
+                                    f"{resp.status}: {resp.reason}. "
+                                    f"Content: {text}")
+                    self._attr_available = False
+        except aiohttp.ClientError as e:
+            _LOGGER.warning(f"Failed to send update for heat pump {self._attr_name} due to {e}")
+            self._attr_available = False
+
+    def set_changes_pending(self):
+        self.schedule_update_ha_state(True)
