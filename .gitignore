@@ -5,3 +5,4 @@
 data
 uart.rs
 components_*.lock
+__pycache__

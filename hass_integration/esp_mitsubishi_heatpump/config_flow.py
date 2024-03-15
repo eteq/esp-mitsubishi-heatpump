@@ -9,10 +9,8 @@ import voluptuous as vol
 
 from homeassistant.core import callback
 from homeassistant.components import zeroconf
-from homeassistant.config_entries import (
-    ConfigFlow,
-    ConfigFlowResult,
-)
+from homeassistant.config_entries import ConfigFlow
+from homeassistant.data_entry_flow import FlowResult
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, CONF_MAC
 
 from homeassistant.helpers.device_registry import format_mac
@@ -23,7 +21,7 @@ DATA_SCHEMA = vol.Schema(
     {vol.Required(CONF_HOST): str, vol.Required(CONF_PORT, default=8923): int}
 )
 
-NAME_W_MAC_MATCH = re.match(r'.*mac ([a-z0-9]*).*')
+NAME_W_MAC_MATCH = re.compile(r'.*mac ([a-z0-9]*).*')
 
 
 class ESPMitsubishiHeapumpFlowHandler(ConfigFlow, domain=DOMAIN):
@@ -77,7 +75,7 @@ class ESPMitsubishiHeapumpFlowHandler(ConfigFlow, domain=DOMAIN):
 
     async def async_step_zeroconf(
         self, discovery_info: zeroconf.ZeroconfServiceInfo
-        ) -> ConfigFlowResult:
+        ) -> FlowResult:
 
         self._device_name = discovery_info.name
         self._host = discovery_info.host

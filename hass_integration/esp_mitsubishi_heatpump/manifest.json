@@ -17,5 +17,5 @@
     "aiohttp"
   ],
   "version": "0.1.0",
-  "zeroconf": ["eteq-mheatpump._tcp.local."]
+  "zeroconf": ["_eteq-mheatpump._tcp.local."]
 }
