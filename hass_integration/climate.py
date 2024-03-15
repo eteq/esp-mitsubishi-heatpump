@@ -2,6 +2,7 @@ import re
 import time
 import asyncio
 import logging
+from collections import defaultdict
 from datetime import timedelta
 
 _LOGGER = logging.getLogger(__name__)
@@ -85,7 +86,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
     def __init__(self, name, ip, port):
         super().__init__()  # may or may not be necessary for ClimateEntity?
 
-        self._last_status = None
+        self._last_status = defaultdict(lambda:None)
         self._last_status_time = None
         self._attr_name = name
         self._attr_ip = ip
