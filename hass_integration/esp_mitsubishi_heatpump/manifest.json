@@ -1,0 +1,21 @@
+{
+  "domain": "esp_mitsubishi_heatpump",
+  "name": "ESP32x Mitsubishi CN105 Heat Pump Controller",
+  "codeowners": [
+    "@eteq"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "climate",
+    "zeroconf"
+  ],
+  "documentation": "https://github.com/eteq/esp-mitsubishi-heatpump/blob/main/README.md",
+  "issue_tracker": "https://github.com/eteq/esp-mitsubishi-heatpump/issues",
+  "iot_class": "local_polling",
+  "integration_type": "hub",
+  "requirements": [
+    "aiohttp"
+  ],
+  "version": "0.1.0",
+  "zeroconf": ["eteq-mheatpump._tcp.local."]
+}
