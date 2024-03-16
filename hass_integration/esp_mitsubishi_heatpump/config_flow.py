@@ -93,7 +93,7 @@ class ESPMitsubishiHeapumpFlowHandler(ConfigFlow, domain=DOMAIN):
             return self._async_get_entry()
 
         return self.async_show_form(
-            step_id="discovery_confirm", description_placeholders={"name": self._name}
+            step_id="discovery_confirm", description_placeholders={"name": self._device_name}
         )
 
     
