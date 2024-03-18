@@ -202,10 +202,17 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         try:
             async with self.hass.data[DOMAIN]['aiohttp_session'].get(url) as resp:
                 if resp.ok:
-                    self._last_status = await resp.json()
-                    self._last_status_time = time.time()
-                    _LOGGER.info(f"Sucessful update of heatpump {self._attr_name} at {self._last_status_time}")
-                    self._attr_available = True
+                    json = await resp.json()
+                    if json['connected']:
+                        self._last_status = json
+                        self._last_status_time = time.time()
+                        _LOGGER.info(f"Sucessful update of heatpump {self._attr_name} at {self._last_status_time}")
+                        self._attr_available = True
+                    else:
+                        _LOGGER.warning(f"heat pump controller "
+                                        f"{self._attr_name} is disconnected. "
+                                        f"Marking as unavailable.")
+                        self._attr_available = False
                 else:
                     text = await resp.text()
                     _LOGGER.warning(f"Failed to get update for heat pump "
