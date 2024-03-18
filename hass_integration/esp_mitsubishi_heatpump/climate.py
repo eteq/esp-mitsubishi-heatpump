@@ -70,7 +70,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         self._attr_ip = ip
         self._attr_port = port
         self._queued_settings = {}
-        self._attr_available = True
+        self._attr_available = False
 
     @property
     def last_status(self):
@@ -196,9 +196,8 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
 
     async def async_update(self):
         if self._queued_settings:
-            self.send_changes()
-            asyncio.sleep(CONTROLLER_SEND_WAIT_TIME_SECS)
-        
+            await self.send_changes()
+            await asyncio.sleep(CONTROLLER_SEND_WAIT_TIME_SECS)
         url = f"http://{self._attr_ip}:{self._attr_port}/status.json"
 
         try:
@@ -239,8 +238,13 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
         try:
             async with self.hass.data[DOMAIN]['aiohttp_session'].post(url, json=data_to_send) as resp:
                 if resp.ok:
-                    # all is fine, don't really care about the return json as long as all is OK
-                    self._queued_settings.clear()
+                    # only clear an entry if it matches tthe current expected target, since updates could have happened while we were waiting for the send to finish
+                    for k,v in (await resp.json()).items():
+                        if k in self._queued_settings and v == self._queued_settings[k]:
+                            del self._queued_settings[k]
+
+                    if self._queued_settings:
+                        _LOGGER.warning(f"Some settings did not get updated in the last send: {list(self._queued_settings)} will try again next update")
                 else:
                     text = await resp.text()
                     _LOGGER.warning(f"Failed to send changeset {data_to_send} to heat pump "
