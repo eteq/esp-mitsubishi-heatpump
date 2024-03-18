@@ -6,12 +6,15 @@ use strum_macros::{FromRepr, EnumIter};
 use log::info;
 use paste::paste;
 
+use enumset::enum_set;
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use esp_idf_hal as hal;
 
 use hal::prelude::*;
+use hal::task::watchdog;
 use hal::gpio::{AnyIOPin, PinDriver, Pull, InputMode, InputPin};
 use hal::uart;
 use hal::rmt;
@@ -56,6 +59,7 @@ const HTTP_SERVER_MAX_LEN: usize = 512;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const WIFI_DISCONNECTED_RESET_TIME: Duration = Duration::from_secs(30);
+const TWDT_TIME: Duration= Duration::from_secs(10); // Only used *after* startup
 
 const HTTP_PORT: u16 = 8923;
 const LED_DEFAULT_BRIGHTNESS: u8 = 20;
@@ -379,7 +383,6 @@ fn main() -> anyhow::Result<()> {
 
     let boot_instant = Instant::now();
 
-
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
 
@@ -437,7 +440,6 @@ fn main() -> anyhow::Result<()> {
         Some (mac) => Some(format!("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])),
         None => None
     };
-
     //Go to yellow once wifi is started
     set_led(led_brightness, led_brightness, 0, &mut npx, &led_off_sense_pin)?;
 
@@ -469,6 +471,18 @@ fn main() -> anyhow::Result<()> {
 
 
 
+    // set up the TWDT to catch any hangs in the main loop
+    let twdt_config = watchdog::TWDTConfig {
+        duration: TWDT_TIME,
+        panic_on_trigger: true,
+        subscribed_idle_tasks: enum_set!(hal::cpu::Core::Core0)
+    };
+    let mut twdt_driver = watchdog::TWDTDriver::new(
+        peripherals.twdt,
+        &twdt_config,
+    )?;
+    let mut watchdog = twdt_driver.watch_current_task()?;
+
 
     info!("Setup complete!");
 
@@ -477,6 +491,7 @@ fn main() -> anyhow::Result<()> {
     // serve and loop forever...
     loop {
         let loopstart = Instant::now();
+        watchdog.feed()?;
 
         led_brightness = nvs_settings.get_u8("led_brightness")?.unwrap_or(LED_DEFAULT_BRIGHTNESS);
 
