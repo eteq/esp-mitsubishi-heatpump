@@ -377,6 +377,8 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
+    let boot_instant = Instant::now();
+
 
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
@@ -431,6 +433,10 @@ fn main() -> anyhow::Result<()> {
             return Err(e);
         }
     };
+    let macstr = match wifimac {
+        Some (mac) => Some(format!("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])),
+        None => None
+    };
 
     //Go to yellow once wifi is started
     set_led(led_brightness, led_brightness, 0, &mut npx, &led_off_sense_pin)?;
@@ -441,17 +447,15 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     let mut server = http::server::EspHttpServer::new(&server_configuration)?;
-    let state = setup_handlers(&mut server)?;
+    let state = setup_handlers(&mut server, boot_instant, macstr.clone())?;
 
     // now start mdns
-    let _mdnso = match wifimac {
-        Some (mac) => {
+    let _mdnso = match macstr {
+        Some (s) => {
             let mut mdns = mdns::EspMdns::take()?;
 
-            let macstr = format!("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-            mdns.set_hostname(["heatpump-controller-", &macstr].concat())?;
-            mdns.set_instance_name(["Mitsubishi heatpump controller w/mac ", &macstr].concat())?;
+            mdns.set_hostname(["heatpump-controller-", &s].concat())?;
+            mdns.set_instance_name(["Mitsubishi heatpump controller w/mac ", &s].concat())?;
 
             mdns.add_service(None, "_eteq-mheatpump", "_tcp", HTTP_PORT, &[])?;
 
@@ -820,7 +824,7 @@ fn setup_wifi<'a>(pmodem: hal::modem::Modem, dnvs: nvs::EspDefaultNvsPartition) 
     Ok((wifi, maco))
 }
 
-fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<HeatPumpStatus>> , EspError> {
+fn setup_handlers(server: &mut http::server::EspHttpServer, boot_instant: Instant, wifimacstr:Option<String>) -> Result<Arc<Mutex<HeatPumpStatus>> , EspError> {
     let state = Arc::new(Mutex::new(HeatPumpStatus::new()));
 
     let index_handler = |req: http::server::Request<&mut http::server::EspHttpConnection>| {
@@ -835,16 +839,22 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
     let inner_state1 = state.clone();
 
     server.fn_handler("/status.json", http::Method::Get, move |req| {
+        let secs = boot_instant.elapsed().as_secs_f32();
+        let timestamp_str =  serde_json::Value::String(format!("{}", secs));
+        let macval = match &wifimacstr {
+            Some(s) => serde_json::Value::String(s.to_string()),
+            None => serde_json::Value::Null
+        };
+
         let stateg = inner_state1.lock().unwrap();
         let resp = if stateg.connected {
             let statusjson = serde_json::to_value(&stateg as &HeatPumpStatus).unwrap();
 
-            // add a timestamp
+            // add the timestamp
             let json = match statusjson {
                 serde_json::Value::Object(mut o) => {
-                    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-                    let timestamp = format!("{}", secs);
-                    o.insert("unix_time".to_string(), serde_json::Value::String(timestamp));  // Something about this is not right...
+                    o.insert("secs_since_boot".to_string(), timestamp_str);
+                    o.insert("mac".to_string(), macval);
                     serde_json::Value::Object(o)
                 }
                 _ => {
@@ -855,7 +865,9 @@ fn setup_handlers(server: &mut http::server::EspHttpServer) -> Result<Arc<Mutex<
         } else {
             let j = json!({
                 "connected": false,
-                "controller_led_brightness": stateg.controller_led_brightness
+                "controller_led_brightness": stateg.controller_led_brightness,
+                "secs_since_boot": timestamp_str,
+                "mac": macval
             });
             j
         };
