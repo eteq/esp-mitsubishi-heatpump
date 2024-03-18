@@ -18,8 +18,7 @@ from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, CONF_MAC
 from . import DOMAIN
 
 
-SCAN_INTERVAL = timedelta(seconds=10)
-CONTROLLER_SEND_WAIT_TIME_SECS = 0.02 # 20ms should be enough?
+SCAN_INTERVAL = timedelta(seconds=30)
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -197,7 +196,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
     async def async_update(self):
         if self._queued_settings:
             await self.send_changes()
-            await asyncio.sleep(CONTROLLER_SEND_WAIT_TIME_SECS)
+
         url = f"http://{self._attr_ip}:{self._attr_port}/status.json"
 
         try:
@@ -205,6 +204,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
                 if resp.ok:
                     self._last_status = await resp.json()
                     self._last_status_time = time.time()
+                    _LOGGER.info(f"Sucessful update of heatpump {self._attr_name} at {self._last_status_time}")
                     self._attr_available = True
                 else:
                     text = await resp.text()
@@ -219,10 +219,10 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
 
     async def send_changes(self):
         if not self._queued_settings:
-            _LOGGER.info("no changes remaining to be sent on mhc, but request was made... ignoring.")
+            _LOGGER.info(f"no changes remaining to be sent on heat pump {self._attr_name}, but request was made... ignoring.")
             return
 
-        _LOGGER.info("sending a changeset on mhc")
+        _LOGGER.info(f"sending a changeset on heat pump {self._attr_name}")
 
         data_to_send = {k:None for k in ['poweron', 'mode', 'desired_temperature_c', 'fan_speed', 'vane', 'widevane']}
         data_to_send.update(self._queued_settings)
