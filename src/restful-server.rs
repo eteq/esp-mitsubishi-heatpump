@@ -6,7 +6,7 @@ use strum_macros::{FromRepr, EnumIter};
 use log::info;
 use paste::paste;
 
-use enumset::enum_set;
+use enumset::EnumSet;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -59,7 +59,7 @@ const HTTP_SERVER_MAX_LEN: usize = 512;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const WIFI_DISCONNECTED_RESET_TIME: Duration = Duration::from_secs(30);
-const TWDT_TIME: Duration= Duration::from_secs(10); // Only used *after* startup
+const TWDT_TIME: Duration = Duration::from_secs(10); // Only used *after* startup
 
 const HTTP_PORT: u16 = 8923;
 const LED_DEFAULT_BRIGHTNESS: u8 = 20;
@@ -475,14 +475,14 @@ fn main() -> anyhow::Result<()> {
     let twdt_config = watchdog::TWDTConfig {
         duration: TWDT_TIME,
         panic_on_trigger: true,
-        subscribed_idle_tasks: enum_set!(hal::cpu::Core::Core0)
+        //subscribed_idle_tasks: enum_set!(hal::cpu::Core::Core0)
+        subscribed_idle_tasks: EnumSet::new()  // do not subscribe the idle task
     };
     let mut twdt_driver = watchdog::TWDTDriver::new(
         peripherals.twdt,
         &twdt_config,
     )?;
     let mut watchdog = twdt_driver.watch_current_task()?;
-
 
     info!("Setup complete!");
 
