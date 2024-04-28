@@ -50,6 +50,8 @@ const LOOP_MIN_LENGTH:Duration = Duration::from_millis(2);
 const CONNECT_DELAY:Duration = Duration::from_millis(2000);
 const RESPONSE_DELAY:Duration = Duration::from_millis(1000);
 
+const REBOOT_PERIOD:Option<Duration> = Some(Duration::from_secs(90*60));
+
 const CONNECT_BYTES: [u8; 8] = [0xfc, 0x5a, 0x01, 0x30, 0x02, 0xca, 0x01, 0xa8];
 
 // Not sure how much is needed, but this is the default in an esp example so <shrug>
@@ -649,6 +651,15 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // Restart if needed
+        if REBOOT_PERIOD.is_some() {
+            if boot_instant.elapsed() >= REBOOT_PERIOD.unwrap() {
+                info!("restarting due to uptime restart trigger");
+                std::thread::sleep(Duration::from_millis(100));
+                reset::restart();
+            }
+        }
+
         // check to see if we need to delay because the loop was too fast
         let loopelapsed = loopstart.elapsed();
         if loopelapsed < LOOP_MIN_LENGTH {
@@ -865,7 +876,7 @@ fn setup_handlers(server: &mut http::server::EspHttpServer, boot_instant: Instan
         let resp = if stateg.connected {
             let statusjson = serde_json::to_value(&stateg as &HeatPumpStatus).unwrap();
 
-            // add the timestamp
+            // add the timestamp & mac
             let json = match statusjson {
                 serde_json::Value::Object(mut o) => {
                     o.insert("secs_since_boot".to_string(), timestamp_str);
