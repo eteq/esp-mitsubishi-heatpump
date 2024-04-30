@@ -103,6 +103,7 @@ struct HeatPumpStatus {
     pub last_status_packets: HashMap<u8, Vec<u8>>,
     pub desired_settings: Option<HeatPumpSetting>,
     pub controller_led_brightness: u8,
+    pub controller_location: Option<String>,
 }
 impl HeatPumpStatus {
     pub fn new() -> Self{
@@ -123,6 +124,7 @@ impl HeatPumpStatus {
             last_status_packets: HashMap::new(),
             desired_settings: None,
             controller_led_brightness: LED_DEFAULT_BRIGHTNESS,
+            controller_location: None,
         }
     }
 }
@@ -137,6 +139,7 @@ struct HeatPumpSetting {
     pub vane: Option<VaneDirection>,
     pub widevane: Option<WideVaneDirection>,
     pub controller_led_brightness: Option<u8>,
+    pub controller_location: Option<String>,
 }
 
 
@@ -152,6 +155,7 @@ impl HeatPumpSetting {
             vane: None,
             widevane: None,
             controller_led_brightness: None,
+            controller_location: None,
         }
     }
     pub fn requires_packet(&self) -> bool {
@@ -398,7 +402,7 @@ fn main() -> anyhow::Result<()> {
 
     // set up NVS since that is needed to remember led brightness
     let nvs_default_partition: nvs::EspNvsPartition<nvs::NvsDefault> = nvs::EspDefaultNvsPartition::take()?;
-    let nvs_settings = nvs::EspNvs::new(nvs_default_partition.clone(), "settings", true)?;
+    let mut nvs_settings = nvs::EspNvs::new(nvs_default_partition.clone(), "settings", true)?;
     let mut led_brightness = nvs_settings.get_u8("led_brightness")?.unwrap_or(LED_DEFAULT_BRIGHTNESS); 
     
     #[cfg(feature="ws2182onboard")]
@@ -497,9 +501,23 @@ fn main() -> anyhow::Result<()> {
 
         led_brightness = nvs_settings.get_u8("led_brightness")?.unwrap_or(LED_DEFAULT_BRIGHTNESS);
 
-        let (connected, data_to_send) = { 
+        let controller_location = match nvs_settings.str_len("controller_loc")? {
+            Some(size) => {
+                let mut controller_location_buf = vec![0; size];
+                nvs_settings.get_str("controller_loc", &mut controller_location_buf)?;
+                controller_location_buf.pop(); // remove the null terminator
+                Some(String::from_utf8(controller_location_buf)?)
+            }
+            None => { None }
+        };
+
+        let (connected, mut data_to_send) = { 
             let mut realstate = state.lock().unwrap();
+
+            // update state from what we got from nvs just above
             realstate.controller_led_brightness = led_brightness;
+            realstate.controller_location = controller_location;
+
             (realstate.connected, realstate.desired_settings.is_some())
          };  
 
@@ -545,7 +563,6 @@ fn main() -> anyhow::Result<()> {
 
                     info!("Writing to heat pump: {:?}", packet_to_send.to_bytes());
                     uart.write(&packet_to_send.to_bytes())?;
-                    realstate.desired_settings = None;
 
                     // now check that we got a packet back
                     let wait_start = Instant::now();
@@ -559,6 +576,7 @@ fn main() -> anyhow::Result<()> {
                         Some(p) => { 
                             if p.packet_type == 0x61 {
                                 info!("Got expected response to setting change request: {:?}", p);
+                                data_to_send = false;
                             } else {
                                 panic!("Got unexpected packet type in response to setting change request: {:?}", p);
                             }
@@ -641,13 +659,22 @@ fn main() -> anyhow::Result<()> {
         // we put the non-heat pump settings (which don't care about connection status) at the end so that if the above fails they don't happen
         // we also put in its own block so that its locks are self-contained
         {
-            let realstate = state.lock().unwrap();
+            let mut realstate = state.lock().unwrap();
             if realstate.desired_settings.is_some() {
-                let desired_settings = realstate.desired_settings.as_ref().unwrap();
+                let desired_settings = realstate.desired_settings.as_mut().unwrap();
                 if desired_settings.controller_led_brightness.is_some() {
                     nvs_settings.set_u8("led_brightness", desired_settings.controller_led_brightness.unwrap())?;
                     info!("setting LED brightness to {:?}", desired_settings.controller_led_brightness.unwrap());
+                    desired_settings.controller_led_brightness = None;
                 }
+                if desired_settings.controller_location.is_some() {
+                    let cl_str = desired_settings.controller_location.as_ref().unwrap();
+                    nvs_settings.set_str("controller_loc", &cl_str)?;
+                    info!("setting controller location to {:?}", cl_str);
+                    desired_settings.controller_location = None;
+                }
+                // data_to_send is false if it was successfully sent above, in which case we assume we are all good having sent the above
+                if !data_to_send { realstate.desired_settings = None; }
             }
         }
 

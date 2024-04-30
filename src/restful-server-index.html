@@ -94,14 +94,13 @@
             <label for="wvane-send"> Send? </label>
             
             <select id="wvane" name="wvane" disabled>
-                <option value="Auto" selected>Auto</option>
                 <option value="FarLeft">FarLeft</option>
                 <option value="Left">Left</option>
                 <option value="Mid">Mid</option>
                 <option value="Right">Right</option>
                 <option value="FarRight">FarRight</option>
                 <option value="Split">Split</option>
-                <option value="Swing">Swing</option>
+                <option value="Swing" selected>Swing</option>
                 <option value="ISee">ISee</option>
             </select>
         </fieldset>
@@ -118,6 +117,19 @@
             <output>20</output>
 
         </fieldset>
+
+
+        <fieldset>
+            <legend>Controller Location</legend>
+
+            <input type="checkbox" id="clocation-send" name="clocation-send" value="clocation-send"
+                   oninput="document.getElementById(this.id.slice(0, -5)).disabled = !this.checked">
+            <label for="clocation-send"> Send? </label>
+            
+            <input id="clocation" type="text" disabled>
+        </fieldset>
+
+        
 
 
     <input type="submit" value="Submit">
@@ -199,6 +211,12 @@
                 json.controller_led_brightness = parseInt(form.elements["ledb"].value);
             } else {
                 json.controller_led_brightness = null;
+            }
+            
+            if (form.elements["clocation-send"].checked) {
+                json.controller_location = form.elements["clocation"].value;
+            } else {
+                json.controller_location = null;
             }
 
             return json;
