@@ -918,11 +918,18 @@ fn setup_handlers(server: &mut http::server::EspHttpServer, boot_instant: Instan
             };
             json
         } else {
+
+            let clocval = match &stateg.controller_location {
+                Some(s) => serde_json::Value::String(s.to_string()),
+                None => serde_json::Value::Null
+            };
+            
             let j = json!({
                 "connected": false,
                 "controller_led_brightness": stateg.controller_led_brightness,
                 "secs_since_boot": timestamp_str,
-                "mac": macval
+                "mac": macval,
+                "controller_location": clocval,
             });
             j
         };
