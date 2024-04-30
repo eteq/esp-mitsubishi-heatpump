@@ -9,7 +9,7 @@
     </style>
 </head>
 
-<body>
+<body onload="update_cloc()">
     <form id="the-form" action="javascript:;" onsubmit="submitForm(this)">
 
         <fieldset>
@@ -222,6 +222,15 @@
             }
 
             return json;
+        }
+
+        // Update the default value for the controller name based on current name
+        async function update_cloc() {
+            const response = await fetch("status.json");
+
+            const result = await response.json();
+            var cloc = document.getElementById('clocation');
+            cloc.value = result['controller_location'];
         }
 
     </script>
