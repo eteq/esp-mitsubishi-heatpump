@@ -586,6 +586,8 @@ fn main() -> anyhow::Result<()> {
                             realstate.connected = false;
                         }
                     };
+                } else {
+                    data_to_send = false;
                 }
 
             } else if last_status_request.elapsed() > RESPONSE_DELAY {
