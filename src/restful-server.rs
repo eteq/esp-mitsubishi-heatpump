@@ -104,6 +104,9 @@ struct HeatPumpStatus {
     pub desired_settings: Option<HeatPumpSetting>,
     pub controller_led_brightness: u8,
     pub controller_location: Option<String>,
+    pub tx_pin: String,
+    pub rx_pin: String,
+    pub led_pin: String,
 }
 impl HeatPumpStatus {
     pub fn new() -> Self{
@@ -125,6 +128,9 @@ impl HeatPumpStatus {
             desired_settings: None,
             controller_led_brightness: LED_DEFAULT_BRIGHTNESS,
             controller_location: None,
+            tx_pin: env!("TX_PIN_NUM").to_string(),
+            rx_pin: env!("RX_PIN_NUM").to_string(),
+            led_pin: env!("LED_PIN_NUM").to_string(),
         }
     }
 }
@@ -428,6 +434,7 @@ fn main() -> anyhow::Result<()> {
         Option::<AnyIOPin>::None,
         &uart_config
     ).unwrap();
+
 
 
     // start up the wifi then try to configure the server
@@ -930,6 +937,9 @@ fn setup_handlers(server: &mut http::server::EspHttpServer, boot_instant: Instan
                 "secs_since_boot": timestamp_str,
                 "mac": macval,
                 "controller_location": clocval,
+                "tx_pin": env!("TX_PIN_NUM"),
+                "rx_pin": env!("RX_PIN_NUM"),
+                "led_pin": env!("LED_PIN_NUM"),
             });
             j
         };
