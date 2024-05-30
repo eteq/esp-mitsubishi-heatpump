@@ -50,5 +50,9 @@ path = "src/packet-sender.rs"
 name = "restful-server"
 path = "src/restful-server.rs"
 
+[[bin]]
+name = "ws-tester"
+path = "src/ws-tester.rs"
+
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/mdns", version = "1.2" }
