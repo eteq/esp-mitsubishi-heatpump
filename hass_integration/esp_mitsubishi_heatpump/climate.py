@@ -258,3 +258,7 @@ class MitsubishiHeatpumpController(climate.ClimateEntity):
 
     def set_changes_pending(self):
         self.schedule_update_ha_state(True)
+
+    @property
+    def extra_state_attributes(self):
+        return {"ip":f"{self._attr_ip}:{self._attr_port}"}
